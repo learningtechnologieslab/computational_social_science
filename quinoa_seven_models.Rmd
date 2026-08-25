@@ -1,0 +1,1446 @@
+---
+title: "Seven Simple Models of the Quinoa Boom"
+subtitle: "An introduction to modeling for computational social science"
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    number_sections: false
+    theme: readable
+---
+
+<!--
+This is an R Markdown notebook, intended to be opened in RStudio.
+
+  - Grey blocks are R "chunks". Run one with the green arrow at its top-right,
+    or with Ctrl+Shift+Enter (Cmd+Shift+Enter on a Mac).
+  - Everything else is explanatory text, written in Markdown.
+  - Running the chunks needs nothing but base R. Producing the HTML preview
+    needs the rmarkdown package: install.packages("rmarkdown").
+  - To knit to a different format, change the "output:" line above to
+    html_document, pdf_document, or word_document.
+-->
+
+
+# Seven Simple Models of the Quinoa Boom
+
+### An introduction to modeling for computational social science
+
+---
+
+This notebook is built around a single piece of journalism:
+
+> Jeremy Cherfas, *"Your Quinoa Habit Really Did Help Peru's Poor. But There's Trouble Ahead,"* NPR (The Salt), 31 March 2016.
+> https://www.npr.org/sections/thesalt/2016/03/31/472453674/your-quinoa-habit-really-did-help-perus-poor-but-theres-trouble-ahead
+
+**The story in brief.** Between 2006 and 2013 the world price of quinoa roughly tripled as North American and European shoppers discovered it. Journalists warned that Andean farmers were being priced out of their own food. Economists then went to the data (ENAHO, Peru's annual household survey of about 22,000 households) and found the warning was wrong: quinoa growers gained the most, urban buyers absorbed a small extra cost, and nobody's nutrition measurably worsened. But the article ends on three warnings: farmers abandoned most of the ~3,000 quinoa varieties, soil is degrading, and after February 2014 the price fell as fast as it had risen.
+
+**Why this article and not a dataset?** Because it is full of *verbal models*. Every claim in it is a compressed causal story:
+* "growers benefit"
+* "high prices attract competitors"
+* "soil is getting worse"
+
+A model is what you get when you make such a story precise enough to be wrong.
+
+---
+
+## How to read this notebook if you don't write code
+
+You do not need to program to follow this. Read it like a set of illustrated arguments:
+
+1. Read the **plain-language section** that opens each model. It states the claim from the article and the idea behind the model.
+2. Skim the **code chunk**. Every line has a comment. The code is deliberately slow and repetitive — written to be read, not to be efficient.
+3. Look at the **picture** the code produces.
+4. Read **"What to notice"** and try one of the **exercises**, which mostly mean changing a single number and re-running.
+
+A few pieces of vocabulary, once:
+
+- A **variable** is a name for a number: `price <- 2.0` means "from now on, `price` refers to 2.0".
+- A **vector** is a named row of numbers, e.g. one value per year. A **data frame** is a table of them.
+- A **loop** (`for (year in years)`) means "do the following once for each year".
+- A **function** (`welfare <- function(...)`) is a named recipe you can re-use with different inputs.
+- A **parameter** is a number you choose that encodes an assumption. Parameters are where the modeling actually happens, and they are the honest place to argue.
+
+**To run a chunk:** click the small green ▶ button at its top-right corner, or put the cursor inside it and press `Ctrl+Shift+Enter` (`Cmd+Shift+Enter` on a Mac). Run the chunks in order — later ones depend on earlier ones. The results appear directly beneath each chunk. To produce a single shareable HTML file of the whole document, click **Preview** (or **Knit**) in the toolbar. The next chunk sets up a few shared conventions. There is nothing to install: everything here uses base R, with no add-on packages.
+
+---
+
+## A note about all the numbers below
+
+* The *structures* of these models are taken seriously.
+* The *numbers* are illustrative, chosen so the pictures are legible and roughly consistent with the magnitudes quoted in the article.
+* None of this is a replication of the underlying papers by Bellemare, Gitter and Fajardo-Gonzalez, or by Stevens.
+* Treat every result as "here is what would follow **if** the world worked like this," never as an estimate of what actually happened.
+
+```{r setup}
+# ---------------------------------------------------------------------------
+# SETUP. Run this chunk first. It only has to run once.
+# ---------------------------------------------------------------------------
+
+# Everything below uses base R only - no packages to install, nothing to
+# download. This chunk just establishes some shared conventions.
+
+# A fixed "seed" for the random-number generator. Some models below use
+# randomness; setting the seed means the random numbers are the SAME every time
+# you run the notebook, so your figures match this text. Reproducibility is a
+# methodological requirement, not a convenience.
+set.seed(20160331)
+
+# A named set of colours, so we can write TAB["green"] instead of a hex code.
+TAB <- c(blue  = "#1f77b4", orange = "#ff7f0e", green = "#2ca02c",
+         red   = "#d62728", purple = "#9467bd", brown = "#8c564b",
+         grey  = "#7f7f7f", pale   = "#dfe6ec", steel = "#7fa8c9")
+
+# One small helper function of our own, used in every figure from here on.
+# add_grid() draws the faint gridlines that base R does not draw by default.
+# We call it just after opening an empty plot and before drawing any data, so
+# the gridlines sit behind the lines rather than on top of them.
+add_grid <- function() {
+  grid(col = "grey88", lty = 1)
+}
+
+# Note what is NOT set here: how big the figures are. In an R Markdown
+# notebook, the size of a figure is a property of the chunk that draws it.
+# Look at the grey header of any chunk below and you will see fig.width and
+# fig.height, measured in inches. Change those numbers to resize a picture.
+
+cat("Setup complete.", R.version.string, "\n")
+```
+
+# Model 1
+# The one-line model: who gains when a price rises?
+
+## The claim in the article
+
+The economist Marc Bellemare says he was not surprised by the finding, because in the short run someone who sells more of a good than they buy is better off when its price goes up.
+
+That sentence is a model. It has structure, it makes a prediction, and it can be checked. Let us write it down.
+
+## The idea
+
+Think of a household as doing two things with quinoa: **producing** some quantity (call it $q_{prod}$, in kilograms per year) and **consuming** some quantity ($q_{cons}$). The difference is what it trades:
+
+$$\text{net sales} = q_{prod} - q_{cons}$$
+
+If that number is positive the household is a **net seller**; if negative, a **net buyer**. Now let the price rise by $\Delta p$ soles per kilogram. To a first approximation, the change in the household's real income is
+
+$$\boxed{\Delta W \;\approx\; (q_{prod} - q_{cons}) \times \Delta p}$$
+
+That is the whole model. No computer required — but a computer makes it easy to vary the assumptions.
+
+## Why "approximately"?
+
+Because the household will *respond* to the new price: grow a bit more quinoa, eat a bit less, switch some spending. Those responses make the true gain slightly larger than the formula says for sellers, and the true loss slightly smaller for buyers. The formula is the value of the *first* step, before anyone adjusts. Economists call this a first-order approximation; in more advanced courses it appears as the envelope theorem. For our purposes: it is accurate for small price changes and gets rougher as the change gets large — and a tripling is not small. Hold that thought; it comes back in the discussion.
+
+## The households
+
+The article gives us enough to sketch three types. We use per-household figures for a household of four.
+
+| Type | Where | Produces | Eats | Budget |
+|---|---|---|---|---|
+| Grower-eater | Puno | yes | yes | poorer |
+| Eater only | Lima etc. | no | yes | about twice as well off |
+| Neither | Peru | no | no | — |
+
+Two anchors from the article: quinoa is under **4%** of the household budget in Puno and under **0.5%** elsewhere; people in Puno ate about **22 kg per person per year** against a national average of about **6 kg**.
+
+```{r model1-arithmetic}
+# ---------------------------------------------------------------------------
+# MODEL 1: net-seller welfare arithmetic
+# ---------------------------------------------------------------------------
+
+# --- Assumptions (all the modeling lives here) ------------------------------
+PRICE_BEFORE <- 2.0    # soles per kilogram, before the boom
+PRICE_AFTER  <- 6.0    # soles per kilogram, after the tripling described in the article
+PEOPLE       <- 4      # people per household
+
+# Quinoa eaten per person per year, in kilograms (figures quoted in the article).
+EAT_PUNO_PP     <- 22.2
+EAT_NATIONAL_PP <- 6.1
+
+# Turn per-person eating into per-household eating.
+eat_puno     <- EAT_PUNO_PP * PEOPLE       # about 89 kg per household per year
+eat_national <- EAT_NATIONAL_PP * PEOPLE   # about 24 kg per household per year
+
+# We can BACK OUT each household's total budget from the budget shares in the
+# article. If quinoa costs (eat x price) and that is 4% of the budget, then the
+# budget must be (eat x price) / 0.04. This is a nice habit to notice: a share
+# plus a level gives you the whole.
+budget_puno     <- (eat_puno * PRICE_BEFORE) / 0.040       # Puno: under 4% of budget
+budget_national <- (eat_national * PRICE_BEFORE) / 0.005   # elsewhere: under 0.5%
+
+# How much a Puno grower harvests per year. This is the least well-anchored
+# number in the model, so we will test how much it matters afterwards.
+GROW_PUNO <- 400.0     # kilograms per household per year
+
+# --- The three household types, as a table ----------------------------------
+# A "data frame" is R's basic table: one row per household type, one column per
+# fact about it. Columns are named, so we can ask for households$budget later.
+households <- data.frame(
+  name     = c("Grower-eater (Puno)", "Eater only (urban)", "Neither"),
+  produces = c(GROW_PUNO,              0.0,                  0.0),
+  eats     = c(eat_puno,                eat_national,         0.0),
+  budget   = c(budget_puno,             budget_national,      budget_national),
+  stringsAsFactors = FALSE
+)
+
+# --- The model itself: three lines ------------------------------------------
+welfare_change <- function(produces, eats, price_change) {
+  # Net sales are what you grow minus what you eat. Positive = you are a seller.
+  net_sales <- produces - eats
+  # The gain (or loss) is net sales multiplied by how much the price moved.
+  # In R the last value a function computes is the value it hands back.
+  net_sales * price_change
+}
+
+price_change <- PRICE_AFTER - PRICE_BEFORE   # +4 soles per kilogram
+
+# R works on whole columns at once, so both answers come out in one line each:
+# no loop is needed to fill in the table.
+households$gain <- welfare_change(households$produces, households$eats, price_change)
+households$pct  <- 100 * households$gain / households$budget
+
+cat(sprintf("Price rises from %.1f to %.1f soles/kg  (a change of %+.1f)\n\n",
+            PRICE_BEFORE, PRICE_AFTER, price_change))
+cat(sprintf("%-22s %10s %10s %10s %12s %10s\n",
+            "household", "grows", "eats", "net sales", "gain (soles)", "% budget"))
+cat(strrep("-", 80), "\n", sep = "")
+
+for (i in seq_len(nrow(households))) {
+  cat(sprintf("%-22s %10.0f %10.0f %10.0f %12.0f %+10.1f\n",
+              households$name[i],
+              households$produces[i],
+              households$eats[i],
+              households$produces[i] - households$eats[i],
+              households$gain[i],
+              households$pct[i]))
+}
+```
+
+```{r model1-figure, fig.width=12, fig.height=4.6, out.width="100%"}
+# ---------------------------------------------------------------------------
+# Picture it, and then ask how much the shakiest assumption matters.
+# ---------------------------------------------------------------------------
+
+par(mfrow = c(1, 2), mar = c(5, 5, 4, 1.5))   # one row, two panels side by side
+
+# --- Left panel: the gain for each household type, as % of its budget -------
+pcts <- households$pct
+colours <- ifelse(pcts > 0, TAB["green"], ifelse(pcts < 0, TAB["red"], TAB["grey"]))
+
+barplot(pcts,
+        names.arg = c("grower-eater\n(Puno)", "eater only\n(urban)", "neither"),
+        col = colours, cex.names = 0.8, las = 1,
+        ylab = "change in real income\n(% of household budget)",
+        main = "Model 1: who gains from a tripling?",
+        ylim = c(min(0, min(pcts)) - 2, max(pcts) * 1.15))
+abline(h = 0, lwd = 1)                        # a line at zero, for reference
+
+# --- Right panel: SENSITIVITY ANALYSIS --------------------------------------
+# We were unsure about how much a grower harvests. So instead of picking one
+# number, try MANY and see what the model says for each. This is one of the most
+# useful habits in modeling: never defend a number you can vary.
+harvests  <- seq(0, 800, length.out = 200)    # 200 evenly spaced values, 0 to 800 kg
+gains_pct <- 100 * welfare_change(harvests, eat_puno, price_change) / budget_puno
+
+plot(harvests, gains_pct, type = "n",         # type = "n" opens the box but draws nothing
+     xlab = "kilograms of quinoa harvested per year",
+     ylab = "change in real income (% of budget)",
+     main = "How much does the harvest assumption matter?")
+add_grid()                                    # gridlines first, so they sit behind
+lines(harvests, gains_pct, lwd = 2, col = TAB["blue"])
+abline(h = 0, lwd = 1)
+abline(v = eat_puno, col = TAB["red"], lty = 2)
+text(eat_puno + 15, min(gains_pct) * 0.55,
+     "break-even:\ngrows exactly\nwhat it eats", col = TAB["red"], cex = 0.75, adj = 0)
+
+par(mfrow = c(1, 1))                          # restore the single-panel layout
+```
+
+## What to notice
+
+**The sign of the effect does not depend on any hard-to-measure number.** It depends only on whether the household grows more than it eats. Everything else — the budget, the exact price, the elasticity of anything — affects the *size* of the answer, not its direction. That is a remarkably strong conclusion from a remarkably weak model, and it is why Bellemare could say he was unsurprised before seeing the data.
+
+**The loss for buyers is small because the budget share is small.** This is the quiet workhorse of the whole argument. Quinoa is culturally central in Puno but it is not rice: under 4% of the budget there, under 0.5% elsewhere. A tripling of a 0.5% budget item costs you about 1% of your budget. You cannot get a humanitarian catastrophe out of a line item that small — which is the arithmetic the original scare stories skipped.
+
+**The model over-predicts the gain, and knowing why is the point.** Our grower's gain comes out implausibly large as a share of its budget. At least four reasons, each a modeling lesson:
+
+1. **A tripling is not a small change**, so the first-order approximation is being used far outside its comfort zone.
+2. **Farm-gate prices are not world prices.** Traders, processors and exporters capture part of the rise, so the $\Delta p$ facing the farmer is smaller than the one facing the shopper.
+3. **Quinoa is not the household's only income**, so its budget denominator should include other crops, livestock and wage work.
+4. **The relevant comparison is against what else the land would have grown.** Switching land into quinoa means giving up something, and the model silently prices that at zero.
+
+Each fix makes the model bigger. Deciding which fixes are worth the complication *is* the craft.
+
+## Exercises
+
+1. Set `GROW_PUNO <- 60`. The household still grows less than it eats — now it is a net buyer despite being a farmer. What happens to the sign? Which real households does this describe?
+2. Change `PRICE_AFTER` to 8.0 (a quadrupling, as the article reports for Puno). Do any conclusions change qualitatively, or only in magnitude? Why does that distinction matter when you report results?
+3. The model has no time in it. Write down, in words, one thing that happens over five years that this model must be getting wrong. (Then read Model 2.)
+
+---
+# Model 2 
+# Why farm prices overshoot: the cobweb
+
+## The claim in the article
+
+The price started falling in February 2014 and dropped about as fast as it had climbed, which the article treats as unsurprising: high prices attract competitors.
+
+Model 1 cannot produce that. It has no time in it: prices are just given. To get a *boom followed by a bust* we need our first **dynamic** model — one where this year's outcome depends on last year's.
+
+## The idea
+
+Agriculture has an unavoidable delay. A farmer decides in the spring how much to plant, and finds out at harvest what the price is. So the plausible assumption is that planting responds to **last year's** price:
+
+$$
+\begin{aligned}
+\text{how much is grown this year:} && Q^{S}_{t} &= c + d\, p_{t-1} \\
+\text{how much people want to buy:} && Q^{D}_{t} &= a - b\, p_{t}
+\end{aligned}
+$$
+
+Here $a, b, c, d$ are positive parameters: $b$ says how strongly buyers back off when the price rises, $d$ says how strongly farmers plant more when the price was high.
+
+Once the crop is in, the harvest is fixed and the price must move until the market clears, $Q^{D}_{t} = Q^{S}_{t}$. Solving for this year's price:
+
+$$\boxed{p_{t} = \frac{a - c - d\,p_{t-1}}{b}}$$
+
+Read the minus sign in front of $d$: **a high price last year means a low price this year.** Farmers responding sensibly to yesterday's news generate oscillation. Nobody has to be irrational.
+
+## The one thing worth remembering
+
+Because each year's price is $-d/b$ times the last one (plus a constant), the behaviour depends entirely on the ratio $d/b$:
+
+- $d/b < 1$ — oscillations **shrink**; the market settles down.
+- $d/b = 1$ — oscillations **persist** forever, unchanged.
+- $d/b > 1$ — oscillations **grow**; the market flies apart.
+
+This is called a cobweb model, because of the shape it traces on a supply-and-demand diagram. It is one of the oldest formal models in economics, and it is the cleanest possible illustration of a general lesson: **delay plus negative feedback equals oscillation.** You will meet that lesson again in epidemics, in traffic, in inventory management, and in your own thermostat.
+
+```{r model2-cobweb, fig.width=14, fig.height=4.6, out.width="100%"}
+# ---------------------------------------------------------------------------
+# MODEL 2: the cobweb. A one-off jump in demand, three different farmer types.
+# ---------------------------------------------------------------------------
+
+years <- 2000:2025      # a row of years: 2000, 2001, ... 2025
+
+# --- Parameters -------------------------------------------------------------
+DEMAND_SLOPE     <- 8.0     # "b": how much less is bought when the price rises by 1
+SUPPLY_INTERCEPT <- 20.0    # "c": how much is grown even at a price of zero
+DEMAND_BASE      <- 100.0   # "a" before the world discovered quinoa
+DEMAND_JUMP      <- 80.0    # how much "a" rises when it becomes a superfood
+BOOM_YEAR        <- 2006    # the year the jump happens
+
+demand_intercept <- function(year) {
+  # A single permanent step up in demand. Before BOOM_YEAR, the old world;
+  # from BOOM_YEAR on, the new one. ("if/else" = "in this case / otherwise".)
+  if (year < BOOM_YEAR) {
+    DEMAND_BASE
+  } else {
+    DEMAND_BASE + DEMAND_JUMP
+  }
+}
+
+simulate_cobweb <- function(supply_slope) {
+  # supply_slope is "d": how strongly farmers respond to last year's price.
+  # Note we write c_ rather than c: in R, "c" is already the name of the
+  # built-in function for building vectors, and shadowing it is a classic trap.
+  b <- DEMAND_SLOPE
+  c_ <- SUPPLY_INTERCEPT
+  d <- supply_slope
+
+  # Make an empty row of numbers, one slot per year, then fill it in.
+  prices <- numeric(length(years))
+
+  # Start the simulation at the calm long-run price of the OLD world, so that
+  # anything interesting we see afterwards was caused by the demand jump and
+  # not by an arbitrary starting point.
+  prices[1] <- (DEMAND_BASE - c_) / (b + d)
+
+  # Now step forward one year at a time. Each new price is computed from the
+  # previous one using the boxed formula above.
+  for (i in 2:length(years)) {
+    a <- demand_intercept(years[i])
+    previous_price <- prices[i - 1]
+    prices[i] <- (a - c_ - d * previous_price) / b
+  }
+
+  prices
+}
+
+# --- Run the same model three times with three different farmer responses ----
+# A "list" holds items of any kind, here a label and a number for each scenario.
+scenarios <- list(
+  list(label = "Sluggish farmers:  d/b = 0.4",  d = 3.2),
+  list(label = "Responsive farmers: d/b = 0.9", d = 7.2),
+  list(label = "Eager farmers:      d/b = 1.1", d = 8.8)
+)
+
+# oma reserves an OUTER margin round all three panels, so we have somewhere to
+# put an overall title. Base R has no direct equivalent of a single "suptitle".
+par(mfrow = c(1, 3), mar = c(4.5, 4.5, 3.5, 1), oma = c(0, 0, 2.5, 0))
+
+for (k in seq_along(scenarios)) {
+  s <- scenarios[[k]]                       # [[ ]] pulls one item out of a list
+  prices <- simulate_cobweb(s$d)
+
+  # Only the leftmost panel needs a y-axis label.
+  y_label <- if (k == 1) "price (soles per kilogram)" else ""
+
+  plot(years, prices, type = "n", xlab = "year", ylab = y_label,
+       main = s$label, cex.main = 0.95)
+  add_grid()
+  lines(years, prices, lwd = 1.5, col = TAB["blue"])
+  points(years, prices, pch = 19, cex = 0.55, col = TAB["blue"])
+  abline(v = BOOM_YEAR, col = TAB["orange"], lty = 2)
+
+  # The price the market would eventually reach if there were no delay at all:
+  long_run <- (DEMAND_BASE + DEMAND_JUMP - SUPPLY_INTERCEPT) / (DEMAND_SLOPE + s$d)
+  abline(h = long_run, col = TAB["grey"], lty = 3)
+
+  if (k == 2) {
+    text(BOOM_YEAR + 0.5, min(prices) + 0.5, "demand jumps",
+         col = TAB["orange"], cex = 0.85, adj = 0)
+  }
+}
+
+mtext("Model 2: identical demand shock, three farmer response strengths",
+      outer = TRUE, cex = 1.0)
+par(mfrow = c(1, 1), oma = c(0, 0, 0, 0))
+
+cat("Dotted grey line = the price a delay-free market would settle at.\n")
+cat("Note that all three panels have the same shock. Only d/b differs.\n")
+```
+
+```{r model2-spiral, fig.width=6.8, fig.height=6.5, out.width="100%"}
+# ---------------------------------------------------------------------------
+# Why it is called a "cobweb": the same simulation drawn on a supply-and-demand
+# diagram instead of against time.
+# ---------------------------------------------------------------------------
+
+d <- 7.2 # the "responsive farmers" case
+prices <- simulate_cobweb(d)
+
+# Look only at the years after the shock, when the interesting adjustment happens.
+start <- which(years == BOOM_YEAR)
+p_path <- prices[start:(start + 9)]
+a_new <- DEMAND_BASE + DEMAND_JUMP
+
+par(mfrow = c(1, 1), mar = c(4.5, 4.5, 3.5, 1.5))
+
+# Draw the two curves. (They are straight lines here; economists still say "curves".)
+p_axis   <- seq(min(p_path) - 1, max(p_path) + 1, length.out = 100)
+q_demand <- a_new - DEMAND_SLOPE * p_axis
+q_supply <- SUPPLY_INTERCEPT + d * p_axis
+
+plot(range(c(q_demand, q_supply)), range(p_axis), type = "n",
+     xlab = "quantity", ylab = "price",
+     main = "The cobweb: a market spiralling inward to equilibrium")
+add_grid()
+lines(q_demand, p_axis, lwd = 2, col = TAB["blue"])
+lines(q_supply, p_axis, lwd = 2, col = TAB["orange"])
+
+# Now trace the actual path the market takes, year by year, as a staircase:
+# each year, quantity is set by LAST year's price (a horizontal move onto the
+# supply curve), then price is set by THIS year's quantity (a vertical move onto
+# the demand curve). Those two moves, repeated, draw the spiral.
+for (i in 1:(length(p_path) - 1)) {
+  q_this_year <- SUPPLY_INTERCEPT + d * p_path[i] # harvest, decided last year
+  segments(q_this_year, p_path[i], q_this_year, p_path[i + 1],
+           col = TAB["red"]) # vertical: price adjusts
+  q_next_year <- SUPPLY_INTERCEPT + d * p_path[i + 1]
+  segments(q_this_year, p_path[i + 1], q_next_year, p_path[i + 1],
+           col = TAB["red"]) # horizontal: planting adjusts
+}
+
+# Mark where the story starts, so the direction of travel is unambiguous.
+points(SUPPLY_INTERCEPT + d * p_path[1], p_path[2], pch = 19, cex = 1.2)
+text(SUPPLY_INTERCEPT + d * p_path[1], p_path[2], " start (2006)", adj = 0, cex = 0.85)
+
+legend("topright",
+       legend = c("demand: buyers this year", "supply: planting response to last year"),
+       col = c(TAB["blue"], TAB["orange"]), lwd = 2, bty = "n", cex = 0.8)
+```
+
+## What to notice
+
+**Overshooting is normal, not evidence of a bubble.** The middle panel rises well above the price a frictionless market would have settled at, then falls back. No speculation, no manipulation, no irrationality, only a one-year planting delay. When you read a commodity price chart, "it overshot and crashed" is not by itself evidence that anything went wrong.
+
+**The same shock produces three different histories.** The demand jump is identical in all three panels. The only difference is how strongly farmers respond, and that single parameter decides whether the story is "market absorbs a shock," "market wobbles for a decade," or "market destabilises." If you were advising a government, $d/b$ is what you would want to know, and it is not visible in any price chart.
+
+**The model fails in an instructive way.** A *permanent* rise in demand leaves the price permanently higher, so this model can produce a wobble around the new level but cannot bring the price nearly back to where it started — which is what the article describes for late 2015. Something else must be going on, and the article names it: new producers in Arequipa with double the yields, plus China, India, Nepal, the United States and Canada planting quinoa. That is not a wobble in supply; it is a permanent expansion of it. That is Model 3.
+
+Noticing exactly which fact your model *cannot* accommodate is more valuable than getting a good fit. It tells you what to build next.
+
+## Exercises
+
+1. In `scenarios`, change 8.8 to 9.5. How many years until the model produces a negative price? What does an impossible prediction tell you about the *model* rather than the world?
+2. Real farmers probably do not look only at last year. Replace `previous_price` with the average of the last two years and re-run. Does the market become more or less stable? Why might averaging stabilise things?
+3. The cobweb assumes farmers never learn that their own collective response is what is crushing the price. Sketch, in words, what a model of farmers who *did* learn would need. What would you need to know about them that a price series cannot tell you?
+
+---
+# Model 3 — Where the competitors came from: diffusion
+
+## The claim in the article
+
+High prices attract competitors. Coastal Arequipa, using intensive methods and fertiliser, got roughly double the yields of Puno; Peruvian exports overtook Bolivian ones; and China, India, Nepal, the United States and Canada started planting quinoa.
+
+## The idea
+
+New producers do not all appear at once, and they do not appear at a steady trickle either. Adoption of a new crop spreads the way rumours and diseases spread: slowly at first because few people are doing it, then fast as it becomes visible and imitable, then slowly again because almost everyone suitable has already adopted. The result is an **S-curve**, and the simplest model of it is the **logistic** equation:
+
+$$A_{t+1} = A_t + r\, A_t (1 - A_t)$$
+
+where $A_t$ is the fraction of potential new growers who have adopted (between 0 and 1) and $r$ sets the speed. Look at the two factors that multiply:
+
+- $A_t$ — growth needs adopters to imitate. Nothing spreads from nobody.
+- $(1 - A_t)$ — growth needs people left to convert. Nothing spreads to everybody twice.
+
+Their product is small at both ends and largest in the middle, which is exactly the S-curve. This same equation, under different names, models epidemics, technology adoption, language change, and viral content. Learning it once buys you a lot.
+
+## Coupling two models together
+
+Now for the step that makes this computational *social science* rather than two separate exercises: we take the S-curve of adoption and feed it into the market from Model 2. Demand ramps up from 2006 to 2013 as in the article. Supply expands along the S-curve, arriving late. Price is whatever clears the market.
+
+Nobody wrote "and then the price crashes" into this model. It falls out.
+
+```{r model3-diffusion, fig.width=9.5, fig.height=9, out.width="100%"}
+# ---------------------------------------------------------------------------
+# MODEL 3: logistic adoption by new producers, feeding into the market
+# ---------------------------------------------------------------------------
+
+years3 <- 2000:2030
+
+# --- Demand side: a gradual ramp rather than Model 2's sudden jump -----------
+DEMAND_START <- 100.0    # demand intercept before the world discovers quinoa
+DEMAND_END   <- 180.0    # ...and after
+RAMP_FROM    <- 2006     # the years over which shoppers discover quinoa
+RAMP_TO      <- 2013
+
+demand_intercept_ramp <- function(year) {
+  if (year < RAMP_FROM) return(DEMAND_START)
+  if (year > RAMP_TO)   return(DEMAND_END)
+  # In between, slide linearly from start to end.
+  fraction_done <- (year - RAMP_FROM) / (RAMP_TO - RAMP_FROM)
+  DEMAND_START + (DEMAND_END - DEMAND_START) * fraction_done
+}
+
+# --- Supply side: the S-curve of new entrants -------------------------------
+SPREAD_RATE   <- 0.7      # "r": how fast adoption spreads
+MIDPOINT_YEAR <- 2014     # the year adoption is halfway done (its steepest moment)
+EXPANSION     <- 0.50     # if every potential entrant adopts, supply rises 50%
+SUPPLY_FIXED  <- 80.0     # quantity from established Andean growers
+
+adopted_fraction <- function(year) {
+  # This is the closed-form solution of the logistic equation, which saves us
+  # a loop. It rises smoothly from ~0 to 1 with its steepest point at MIDPOINT_YEAR.
+  1 / (1 + exp(-SPREAD_RATE * (year - MIDPOINT_YEAR)))
+}
+
+# --- Run it ------------------------------------------------------------------
+# Three empty rows of numbers, one slot per year, which the loop fills in.
+adoption <- numeric(length(years3))
+quantity <- numeric(length(years3))
+price    <- numeric(length(years3))
+
+for (i in seq_along(years3)) {
+  year <- years3[i]
+  A <- adopted_fraction(year)                    # how far adoption has spread
+  Q <- SUPPLY_FIXED * (1 + EXPANSION * A)        # total world supply this year
+  a <- demand_intercept_ramp(year)               # how keen buyers are this year
+  p <- (a - Q) / DEMAND_SLOPE                    # the price that clears the market
+
+  adoption[i] <- A
+  quantity[i] <- Q
+  price[i]    <- p
+}
+
+# --- Draw three stacked panels: cause, mechanism, consequence ----------------
+par(mfrow = c(3, 1), mar = c(4, 5.5, 3, 1.5))
+
+# sapply() applies a function to every element of a vector and collects the
+# answers - the tidy way to evaluate demand_intercept_ramp() for every year.
+demand_by_year <- sapply(years3, demand_intercept_ramp)
+
+plot(years3, demand_by_year, type = "n", xlab = "", ylab = "demand strength",
+     main = "Cause: Western shoppers discover quinoa (2006-2013)")
+add_grid()
+lines(years3, demand_by_year, lwd = 2, col = TAB["blue"])
+
+plot(years3, 100 * adoption, type = "n", xlab = "",
+     ylab = "new growers who\nhave adopted (%)",
+     main = "Mechanism: adoption spreads along an S-curve, arriving late")
+add_grid()
+lines(years3, 100 * adoption, lwd = 2, col = TAB["green"])
+
+plot(years3, price, type = "n", xlab = "year", ylab = "price (soles/kg)",
+     main = "Consequence: boom, then bust - which nobody put in by hand")
+add_grid()
+lines(years3, price, lwd = 2, col = TAB["red"])
+abline(v = 2013, col = TAB["grey"], lty = 2)
+text(2013.4, max(price) * 0.55, "price peaks, then\nnew supply arrives",
+     cex = 0.8, col = TAB["grey"], adj = 0)
+
+par(mfrow = c(1, 1))
+
+peak_year <- years3[which.max(price)]
+cat(sprintf("Price peaks in %d at %.1f, having started at %.1f.\n",
+            peak_year, max(price), price[1]))
+cat(sprintf("By %d it has fallen to %.1f - still above the old level, but well off the peak.\n",
+            years3[length(years3)], price[length(price)]))
+```
+
+## What to notice
+
+**The bust is not a separate event.** In this model the crash has the same cause as the boom. The high price is what made quinoa worth planting in Arequipa and Nepal; the planting is what ended the high price. There is no second shock, no policy failure, no villain. A system whose response to a signal destroys the signal is a **negative feedback loop with a delay**, and it is one of the two or three most common structures in all of social science.
+
+**Two models, one observation.** Model 2 and Model 3 both produce "price rises, then falls." They attribute it to completely different mechanisms: a planting lag among existing farmers, versus entry by new ones. Given only a price chart you *cannot* tell them apart. This is called **equifinality** or the identification problem, and it is the single most important idea in this notebook. Fitting a curve to data does not establish a mechanism. To choose between these two models you would need different evidence entirely — acreage by region, entry dates, who planted what and when.
+
+**Notice what we did not model.** Where does `MIDPOINT_YEAR = 2014` come from? We chose it, partly so the picture would resemble the article. That is fine for illustration and fatal for inference. A more honest model would make adoption *respond* to the price rather than be scheduled by us (see the exercises), which is harder and much more interesting.
+
+## Exercises
+
+1. Set `EXPANSION <- 1.0` — the new regions can double world supply rather than add half. What happens to the final price relative to the pre-boom price? What would that mean for a Puno farmer who took on debt in 2012?
+2. Set `SPREAD_RATE <- 0.25`. The crash becomes gentler and later. Which is worse for Andean farmers: a fast crash or a slow one? Notice that answering this requires a value judgement that the model does not contain.
+3. **The interesting one.** Make adoption endogenous: instead of `adopted_fraction(year)`, grow `A` inside the loop using `A <- A + r * A * (1 - A) * max(0, price_last_year - threshold)`. Now high prices *cause* adoption. You will need to keep track of last year's price. Does the boom-bust get sharper or smoother? This is the step from *describing* a pattern to *explaining* it.
+
+---
+# Model 4 
+# Soil, llamas and the cost of a good decade: a stock-and-flow model
+
+## The claim in the article
+
+A study by Adam Drucker's student Enrico Avitabile found that more than half of surveyed Bolivian farmers said their soil was worse than before the boom, for two reasons. High prices pulled land out of fallow, which had been letting it rest, causing erosion and nutrient loss. And farmers who earned more from quinoa cut back their llama herds — so less manure was available to fertilise and protect the soil.
+
+Read that again and notice its shape. It is a **loop**: quinoa area up, pasture down, llamas down, manure down, soil down, and soil is what quinoa grows in.
+
+## The idea: stocks and flows
+
+Model 1 to 3 tracked prices and quantities — things that happen in a year. This model tracks something different: a **stock**, a quantity that accumulates. Soil fertility is not an event, it is a bank balance. Each year some is deposited and some withdrawn, and what carries over is the balance.
+
+$$\text{stock next year} = \text{stock this year} + \text{inflows} - \text{outflows}$$
+
+Everything below is that one sentence, written three times. We track two stocks:
+
+**Soil fertility** $S$ (an index, 1.0 = pre-boom condition):
+
+$$S_{t+1} = S_t + \underbrace{g\,(1 - q_t)(S_{max} - S_t)}_{\text{resting land recovers}} + \underbrace{m\,L_t}_{\text{llama manure}} - \underbrace{k\, q_t}_{\text{cropping depletes}}$$
+
+**The llama herd** $L$, which grows toward whatever the remaining pasture can support:
+
+$$L_{t+1} = L_t + \rho\, L_t\left(1 - \frac{L_t}{K(1 - q_t)}\right)$$
+
+That is the logistic equation from Model 3 again — but here it is doing a completely different job, describing a population pressing against a limit rather than an idea spreading. Reusing structure across domains is most of what modeling skill consists of.
+
+And the two are linked through a single decision: $q_t$, the fraction of land planted with quinoa, which rises when the price rises. Every kilogram of land in quinoa is a kilogram not in pasture.
+
+## What to watch for
+
+A stock can be run down for years while every annual report looks excellent. That is the whole point of building this model.
+
+```{r model4-soil, fig.width=12.5, fig.height=8, out.width="100%"}
+# ---------------------------------------------------------------------------
+# MODEL 4: coupled soil / herd / land-use dynamics
+# ---------------------------------------------------------------------------
+
+years4 <- 2000:2040   # run well past the boom, to see the aftermath
+
+# --- The price story, taken from the article: rise to 2013, fall by 2016 -----
+relative_price <- function(year) {
+  # Expressed as a multiple of the pre-boom price, so 1.0 = "normal", 4.0 = "quadrupled".
+  if (year < 2006)  return(1.0)
+  if (year <= 2013) return(1.0 + 3.0 * (year - 2006) / 7.0)   # climb from 1x to 4x
+  if (year <= 2016) return(4.0 - 2.0 * (year - 2013) / 3.0)   # fall from 4x to 2x
+  2.0                                                          # settle at twice pre-boom
+}
+
+# --- Parameters --------------------------------------------------------------
+REGEN     <- 0.10      # "g":   how fast resting (fallow) land rebuilds fertility
+MANURE    <- 0.0225    # "m":   fertility added per unit of llama herd
+DEPLETION <- 0.09      # "k":   fertility removed per unit of land cropped
+HERD_GROW <- 0.35      # "rho": how fast the herd grows toward what pasture allows
+S_MAX     <- 1.0       # the best the soil gets: its pristine pre-boom condition
+BASE_AREA <- 0.25      # fraction of land in quinoa at the normal price
+RESPONSE  <- 0.5       # how strongly planting responds to price (0.5 = square-root)
+
+# These parameters are deliberately tuned so that at the pre-boom price the
+# system sits STILL: inflows exactly balance outflows, soil stays at 1.0, herd
+# stays at 1.0. That matters. It means anything we see later was caused by the
+# boom and not by a slow drift we accidentally built in. Always establish that
+# your model does nothing before you ask it to do something.
+
+planted_fraction <- function(price) {
+  # Farmers plant more when the price is high, with diminishing enthusiasm,
+  # and can never plant more than 85% of their land.
+  min(0.85, BASE_AREA * price ^ RESPONSE)
+}
+
+run_soil_model <- function(soil_can_degrade = TRUE) {
+  # If soil_can_degrade is FALSE we hold fertility fixed at 1.0. That gives us
+  # a COUNTERFACTUAL: the same boom in a world where soil were indestructible.
+  # Comparing the two isolates the cost of degradation.
+  soil <- 1.0
+  herd <- 1.0
+
+  # Prepare an empty table with one row per year, then fill it in as we go.
+  history <- data.frame(year = years4, price = NA_real_, area = NA_real_,
+                        soil = NA_real_, herd = NA_real_, harvest = NA_real_)
+
+  for (i in seq_along(years4)) {
+    year    <- years4[i]
+    price   <- relative_price(year)
+    q       <- planted_fraction(price)   # land in quinoa
+    pasture <- 1.0 - q                   # land left for llamas
+    yield_per_unit <- soil               # fertile soil grows more per hectare
+    harvest <- q * yield_per_unit        # this year's output
+
+    history[i, ] <- c(year, price, q, soil, herd, harvest)
+
+    # --- Update the two stocks: balance = balance + in - out -----------------
+    if (soil_can_degrade) {
+      recovery   <- REGEN * pasture * (S_MAX - soil)   # resting land rebuilds
+      fertiliser <- MANURE * herd                      # manure from llamas
+      loss       <- DEPLETION * q                      # cropping takes nutrients
+      soil <- min(S_MAX, max(0.05, soil + recovery + fertiliser - loss))
+    }
+
+    capacity <- max(pasture / (1.0 - BASE_AREA), 1e-6)  # pasture sets the ceiling
+    herd <- max(0.02, herd + HERD_GROW * herd * (1.0 - herd / capacity))
+  }
+
+  history
+}
+
+with_degradation    <- run_soil_model(soil_can_degrade = TRUE)
+without_degradation <- run_soil_model(soil_can_degrade = FALSE)
+
+# --- Draw four panels: cause, land use, the stock, and the bill --------------
+par(mfrow = c(2, 2), mar = c(4.2, 5, 3.2, 1.5))
+
+plot(years4, with_degradation$price, type = "n", xlab = "",
+     ylab = "price (multiple of pre-boom)", main = "The price shock we impose")
+add_grid()
+lines(years4, with_degradation$price, lwd = 2, col = TAB["orange"])
+
+plot(years4, 100 * with_degradation$area, type = "n", xlab = "",
+     ylab = "% of land / relative herd size", ylim = c(20, 80),
+     main = "Land use responds; the herd is squeezed out")
+add_grid()
+lines(years4, 100 * with_degradation$area, lwd = 2, col = TAB["brown"])
+lines(years4, 100 * with_degradation$herd * (1 - BASE_AREA), lwd = 2, col = TAB["purple"])
+legend("topright", legend = c("land in quinoa", "llama herd (scaled)"),
+       col = c(TAB["brown"], TAB["purple"]), lwd = 2, bty = "n", cex = 0.8)
+
+plot(years4, with_degradation$soil, type = "n", xlab = "year",
+     ylab = "fertility index",
+     ylim = range(c(with_degradation$soil, 1.0)) + c(-0.005, 0.012),
+     main = "The stock: soil fertility does not come back")
+add_grid()
+lines(years4, with_degradation$soil, lwd = 2, col = TAB["green"])
+abline(h = 1.0, col = TAB["grey"], lty = 3)
+
+plot(years4, with_degradation$harvest, type = "n", xlab = "year",
+     ylab = "harvest (index)",
+     ylim = range(c(with_degradation$harvest, without_degradation$harvest)),
+     main = "The bill arrives late, as lost output")
+add_grid()
+lines(years4, with_degradation$harvest, lwd = 2, col = TAB["blue"])
+lines(years4, without_degradation$harvest, lwd = 2, lty = 2, col = TAB["orange"])
+legend("bottomright", legend = c("with degradation", "counterfactual: soil indestructible"),
+       col = c(TAB["blue"], TAB["orange"]), lwd = 2, lty = c(1, 2), bty = "n", cex = 0.8)
+
+par(mfrow = c(1, 1))
+
+s <- with_degradation$soil
+h_with    <- with_degradation$harvest
+h_without <- without_degradation$harvest
+n <- length(years4)
+
+cat(sprintf("Soil fertility: 1.000 in 2000  ->  %.3f at the 2013 peak  ->  %.3f by 2040\n",
+            s[14], s[n]))
+cat(sprintf("Harvest in 2040: %.3f with degradation vs %.3f without - a shortfall of %.1f%%.\n",
+            h_with[n], h_without[n], 100 * (1 - h_with[n] / h_without[n])))
+```
+
+## What to notice
+
+**Every single year of the boom looks like a success.** Output rises, income rises, and it is all true. Meanwhile the stock is being drawn down, invisibly, because a stock is not in this year's accounts. This model does not contradict the good news from Model 1 — it says the good news was measured over the wrong horizon. That combination, "the short-run finding is right *and* the long-run picture is bad," is far more common in social science than either side of most public arguments admits.
+
+**Nothing recovers on its own.** When the price falls back to twice pre-boom levels, land use partly reverts and the herd partly recovers, but fertility settles at a permanently lower level. Stocks have memory. This is called **hysteresis**: the system does not retrace its path when you undo the shock. It is why "we can always reverse the policy later" is often a false promise.
+
+**The loop is the finding.** Any one of the three links — more quinoa, fewer llamas, less manure — is unremarkable on its own. Together they form a circuit that amplifies. You could not have found this by staring at correlations between pairs of variables; you find it by drawing the arrows and following them round.
+
+**Be honest about the parameters.** `DEPLETION = 0.09` is not measured; nobody handed us that number. So the *magnitudes* in these figures mean nothing. What survives is the qualitative shape: delayed, partly irreversible decline that a boom-time income statement cannot see. Report the shape, not the digits.
+
+## Exercises
+
+1. Set `MANURE <- 0.0` — imagine the herds vanish entirely. How much worse does the soil get? This is a crude way of asking how much of the damage runs through the llama channel rather than through fallow loss, and it is the kind of question a field study could then go and test.
+2. Add a policy. Cap `planted_fraction` at 0.4 by changing the `min(0.85, ...)`. The farmer earns less during the boom and has better soil afterwards. Was the cap worth it? Notice you cannot answer without deciding how much you care about the future relative to the present — a **discount rate**, and a moral choice wearing a technical costume.
+3. Extend the model so that the *price* also depends on total harvest, linking this to Model 2. You will have created a feedback loop with two delays. Predict before you run it whether that makes the system more or less stable.
+
+---
+# Model 5  
+# Why 3,000 varieties become five: a public-goods game
+
+## The claim in the article
+
+Export demand fastened onto a handful of the roughly 3,000 quinoa varieties, so farmers abandoned many of the rest. Stefano Padulosi argues those abandoned varieties are precisely what quinoa will need in order to adapt to pressures like climate change, and would like to see a global mechanism that rewards Andean farmers for maintaining diversity. Meanwhile Adam Drucker has run pilot studies on what it would take to persuade farmers to keep growing varieties exporters do not want — and Gitter and Bellemare found that the 150 Puno farmers they interviewed would grow less-preferred varieties in exchange for cash.
+
+## The idea
+
+Models 1 to 4 had no *strategy* in them. Prices moved and people responded. But this is a different kind of problem, because the value of diversity does not accrue to the farmer who maintains it. A rare variety that turns out to carry drought resistance benefits quinoa growers everywhere, for decades, including ones not yet born. The farmer who kept it alive captures almost none of that.
+
+This is the structure of a **public good**: costly to provide individually, valuable to everyone collectively, and therefore under-provided. It is the same skeleton as vaccination, tax compliance, fisheries, and emissions.
+
+## Part A: two farmers, four outcomes
+
+Strip it to two farmers, each choosing **Export variety** (high price) or **Traditional variety** (lower price, but adds to the shared stock of diversity):
+
+$$\text{payoff} = \underbrace{\text{private revenue from your own choice}}_{\text{yours alone}} + \underbrace{\text{value of diversity}}_{\text{shared by all, whoever provides it}}$$
+
+Watch what happens when each farmer asks the only question a payoff matrix lets them ask: *given whatever the other one does, what is best for me?*
+
+```{r model5a-game}
+# ---------------------------------------------------------------------------
+# MODEL 5A: the two-farmer diversity game
+# ---------------------------------------------------------------------------
+
+# --- Parameters -------------------------------------------------------------
+REVENUE_EXPORT      <- 100.0   # what you earn growing the variety exporters want
+REVENUE_TRADITIONAL <- 70.0    # what you earn growing an old local variety
+DIVERSITY_VALUE     <- 20.0    # value created for EVERYONE by each conserving farmer
+# Note the tension deliberately built into these three numbers: conserving costs
+# you 30 privately but creates 20 of value for EACH of the two farmers, i.e. 40
+# in total. So conserving is good for the pair (40 > 30) and bad for you (20 < 30).
+
+payoff <- function(my_choice, other_choice) {
+  # My private revenue depends only on my own choice.
+  private <- if (my_choice == "Traditional") REVENUE_TRADITIONAL else REVENUE_EXPORT
+  # The public benefit depends on how many of us conserve - mine and theirs alike.
+  # In R, TRUE counts as 1 and FALSE as 0 when you do arithmetic with them.
+  conservers <- (my_choice == "Traditional") + (other_choice == "Traditional")
+  private + DIVERSITY_VALUE * conservers
+}
+
+choices <- c("Export", "Traditional")
+
+cat("Payoffs (Farmer A, Farmer B). Rows = A's choice, columns = B's choice.\n\n")
+cat(sprintf("%-14s %22s %22s\n", "", "B: Export", "B: Traditional"))
+for (a in choices) {
+  row_text <- ""
+  for (b in choices) {
+    pair <- sprintf("(%.0f, %.0f)", payoff(a, b), payoff(b, a))
+    row_text <- paste0(row_text, sprintf("%22s ", pair))
+  }
+  cat(sprintf("%-14s %s\n", paste0("A: ", a), row_text))
+}
+
+# --- Find the Nash equilibrium ----------------------------------------------
+# Definition: a pair of choices where NEITHER farmer can do better by switching,
+# taking the other's choice as fixed. Let us just check all four possibilities.
+cat("\nChecking each outcome for stability:\n")
+for (a in choices) {
+  for (b in choices) {
+    other_a <- choices[choices != a]      # A's alternative
+    other_b <- choices[choices != b]      # B's alternative
+    a_content <- payoff(a, b) >= payoff(other_a, b)   # would A rather switch?
+    b_content <- payoff(b, a) >= payoff(other_b, a)   # would B rather switch?
+    verdict <- if (a_content && b_content) {
+      "NASH EQUILIBRIUM - nobody wants to move"
+    } else {
+      "unstable"
+    }
+    cat(sprintf("  A=%-12s B=%-12s -> total welfare %5.0f   %s\n",
+                a, b, payoff(a, b) + payoff(b, a), verdict))
+  }
+}
+
+both_export   <- payoff("Export", "Export") + payoff("Export", "Export")
+both_conserve <- payoff("Traditional", "Traditional") + payoff("Traditional", "Traditional")
+cat(sprintf("\nEveryone growing export varieties yields total welfare of %.0f.\n", both_export))
+cat(sprintf("Everyone conserving would yield %.0f - which is %.0f higher, and unreachable.\n",
+            both_conserve, both_conserve - both_export))
+```
+
+### What just happened
+
+Growing the export variety is a **dominant strategy**: it is better for you no matter what your neighbour does. So both farmers do it, and they land on the outcome that is worse for both. Nobody was greedy, short-sighted or ignorant. Each did the best available thing, and the aggregate was bad. That gap between individually sensible and collectively good is the reason this class of model exists — and it is why the article's talk of a "global mechanism" is not hand-waving but a structural necessity. Exhortation cannot fix a dominant strategy. Changing the payoffs can.
+
+Which raises the practical question Drucker went out and asked: **how much cash would it take?**
+
+## Part B: paying for conservation
+
+Farmers differ. Some are almost indifferent between varieties; others would need a great deal to give up export revenue. Each farmer has a **willingness to accept** — the smallest payment that would make conserving worth it. A farmer conserves if the payment offered is at least their willingness to accept.
+
+Below we simulate 150 farmers, matching the 150 Puno farmers in the Gitter and Bellemare interviews, and ask a designer's question: what does it cost to protect a target share of varieties? Then we compare two ways of paying, which turns out to matter a great deal.
+
+```{r model5b-cost, fig.width=12.5, fig.height=4.8, out.width="100%"}
+# ---------------------------------------------------------------------------
+# MODEL 5B: how much would conservation cost?
+# ---------------------------------------------------------------------------
+
+N_FARMERS <- 150     # matching the interview sample size mentioned in the article
+
+# Each farmer's willingness to accept, in soles per year. We use a lognormal
+# distribution: most farmers cheap, a few very expensive, none negative. That
+# right-skewed shape is typical of real willingness-to-accept data, and choosing
+# it is itself a modeling assumption you should be prepared to defend.
+wta <- rlnorm(N_FARMERS, meanlog = log(300), sdlog = 0.8)
+
+payments <- seq(0, 2000, length.out = 400)   # 400 candidate payment levels to test
+
+uptake        <- numeric(length(payments))
+cost_uniform  <- numeric(length(payments))
+cost_targeted <- numeric(length(payments))
+
+for (i in seq_along(payments)) {
+  offer      <- payments[i]
+  conserving <- wta <= offer            # TRUE/FALSE for each farmer
+  n_conserving <- sum(conserving)        # TRUE counts as 1
+  uptake[i]  <- 100 * n_conserving / N_FARMERS
+
+  # Way 1 - UNIFORM: advertise one price and pay it to everyone who accepts.
+  # Simple, transparent, and you overpay every farmer who would have said yes
+  # for less. That overpayment is called "rent".
+  cost_uniform[i] <- offer * n_conserving
+
+  # Way 2 - TARGETED: pay each farmer exactly their own willingness to accept.
+  # Cheaper, but it requires knowing a private number, which is precisely what
+  # auctions and pilot schemes are trying to discover.
+  cost_targeted[i] <- sum(wta[conserving])
+}
+
+par(mfrow = c(1, 2), mar = c(4.5, 5, 3.5, 1.5))
+
+hist(wta, breaks = 30, col = TAB["blue"], border = "white",
+     xlab = "willingness to accept (soles per year)", ylab = "number of farmers",
+     main = "Farmers are not identical")
+abline(v = median(wta), col = TAB["red"], lty = 2, lwd = 2)
+text(median(wta) * 1.15, par("usr")[4] * 0.8,
+     sprintf("median\n%.0f soles", median(wta)), col = TAB["red"], cex = 0.8, adj = 0)
+
+plot(uptake, cost_uniform, type = "n",
+     xlab = "% of farmers conserving a traditional variety",
+     ylab = "total annual cost (soles)",
+     main = "What conservation costs, and how you pay for it")
+add_grid()
+lines(uptake, cost_uniform,  lwd = 2, col = TAB["blue"])
+lines(uptake, cost_targeted, lwd = 2, lty = 2, col = TAB["orange"])
+legend("topleft", legend = c("uniform payment to all takers", "payment tailored to each farmer"),
+       col = c(TAB["blue"], TAB["orange"]), lwd = 2, lty = c(1, 2), bty = "n", cex = 0.8)
+
+par(mfrow = c(1, 1))
+
+# What does it cost to reach a 60% conservation target?
+target <- 60.0
+i <- which(uptake >= target)[1]    # the first payment level that reaches the target
+
+cat(sprintf("To get %.0f%% of farmers conserving:\n", target))
+cat(sprintf("  offer                   : %6.0f soles per farmer per year\n", payments[i]))
+cat(sprintf("  cost, uniform payment   : %6.0f soles per year\n", cost_uniform[i]))
+cat(sprintf("  cost, tailored payment  : %6.0f soles per year\n", cost_targeted[i]))
+cat(sprintf("  overpayment ('rent')    : %6.0f soles, or %.0f%% of the uniform bill\n",
+            cost_uniform[i] - cost_targeted[i],
+            100 * (cost_uniform[i] - cost_targeted[i]) / cost_uniform[i]))
+```
+
+## What to notice
+
+**The cost curve bends upward.** The first farmers are cheap, the last are dear, because you must raise the offer to reach the reluctant and that raise goes to everybody. So "conserve all 3,000 varieties" and "conserve most varieties" have wildly different price tags. Targets should be chosen with the cost curve in hand, not before.
+
+**How you pay can matter as much as how much.** The gap between the two lines is money that buys no additional conservation. In practice this is why conservation schemes experiment with auctions, in which farmers bid and the cheapest bids win — an attempt to move from the upper line toward the lower one. The article's mention of pilot studies to work out what incentives farmers need is exactly this: not charity, but measurement of a distribution you cannot observe directly.
+
+**The article's ending now reads differently.** Drucker says the approach works and is cost-effective, and that the obstacle is unlocking public funds. Our model says why the obstacle exists: the beneficiaries are global and future, while the payers would be national and present. The mismatch is not a failure of will. It is in the structure of the payoffs.
+
+**A caution about the numbers.** Our 150 willingness-to-accept values came from a random number generator, not from Puno. The *shape* of the argument is robust; the soles are fiction. Never let a simulated distribution be quoted as a finding.
+
+## Exercises
+
+1. Change `sdlog = 0.8` to `sdlog = 0.3`, making farmers much more alike. What happens to the gap between uniform and tailored payment? Explain why heterogeneity is the thing that makes payment design matter.
+2. In Part A, raise `DIVERSITY_VALUE` to 40 and lower `REVENUE_EXPORT` to 75. Does conserving become the dominant strategy? What real-world change would correspond to that shift in parameters?
+3. The article mentions creating internal markets for threatened varieties, in hospital and school food programmes. Which parameter of Part A does that intervention change, and how does it differ from simply paying farmers?
+
+---
+# Model 6 
+
+# When a model fails usefully: demand with a subsistence floor
+
+## The claim in the article
+
+Andrew Stevens found that across Peru as a whole, quinoa eating fell from about 6.07 kg per person per year in 2004 to about 4.09 kg in 2012, following the price. But in Puno — where more than 80% of Peru's quinoa is grown, and where prices rose even more steeply than nationally — people ate slightly *more*: about 23.62 kg against 22.22 kg. Stevens reports that Puno households did not cut back despite a roughly fourfold price increase.
+
+Consumption rising while the price quadruples is the kind of fact that breaks textbook models. Good. This model is included because it **fails**, and because the failure is more instructive than any of the successes above.
+
+## Start with the standard model
+
+The simplest respectable demand model says people spend a fixed share $\alpha$ of their budget $m$ on quinoa. Then the quantity bought is
+
+$$q = \frac{\alpha\, m}{p}$$
+
+Quadruple the price, and consumption falls to a quarter. That is a strong prediction, and we can check it directly against Stevens's national numbers.
+
+## Then relax one assumption
+
+Now suppose there is some quantity of quinoa a household will hold onto almost regardless of price — because it is what the children eat, because it is what the dishes require, because it is what food *is* there. Call it $\gamma$, a habitual or subsistence floor. The household secures $\gamma$ first, then spends a share of whatever is left over the usual way:
+
+$$q = \gamma + \frac{\alpha}{p}\bigl(m - p\,\gamma\bigr)$$
+
+This is the **Stone–Geary** demand function, and it turns "quinoa is culturally important" from a piece of atmosphere into a number you can estimate and argue about. If $\gamma = 0$ it collapses back to the standard model, which is a good sign: a useful generalisation should contain the thing it generalises.
+
+We will do two things: find the floor that reproduces the national fall, then try to find one that reproduces the Puno rise.
+
+```{r model6-fit}
+# ---------------------------------------------------------------------------
+# MODEL 6: fitting a subsistence floor to Stevens's two findings
+# ---------------------------------------------------------------------------
+
+# --- The observations from the article --------------------------------------
+NATIONAL <- list(name = "Peru as a whole", q_2004 = 6.07,  q_2012 = 4.09,  budget_share = 0.005)
+PUNO     <- list(name = "Puno region",     q_2004 = 22.22, q_2012 = 23.62, budget_share = 0.040)
+
+PRICE_2004 <- 2.0     # soles per kilogram (an arbitrary but harmless scale)
+PRICE_2012 <- 8.0     # the roughly fourfold increase the article reports
+INCOME_GROWTH <- 1.40 # Peruvian living standards rose over this period; the article
+                      # notes all three household groups saw their welfare rise.
+
+stone_geary_prediction <- function(floor, q_start, price_start, price_end,
+                                   budget_start, budget_end) {
+  # Step 1: work out the household's marginal budget share "alpha" from the
+  # fact that it consumed q_start when the price was price_start. This is
+  # called CALIBRATION: we do not guess alpha, we solve for the value that
+  # makes the model exactly reproduce the starting point.
+  spare_budget <- budget_start - price_start * floor      # money left after the floor
+  if (spare_budget <= 0 || q_start <= floor) {
+    return(NA_real_)                                      # this floor is impossible
+  }
+  alpha <- (q_start - floor) * price_start / spare_budget
+
+  # Step 2: with alpha fixed, predict consumption at the new price and income.
+  spare_later <- budget_end - price_end * floor
+  if (spare_later <= 0) {
+    return(NA_real_)
+  }
+  floor + (alpha / price_end) * spare_later
+}
+
+analyse <- function(region) {
+  # Recover the household budget from the budget share quoted in the article.
+  budget_2004 <- region$q_2004 * PRICE_2004 / region$budget_share
+  budget_2012 <- budget_2004 * INCOME_GROWTH
+
+  # First: the standard model, i.e. a floor of exactly zero.
+  plain <- stone_geary_prediction(0.0, region$q_2004, PRICE_2004, PRICE_2012,
+                                  budget_2004, budget_2012)
+
+  # Then: try every floor from 0 up to just below what they already eat, and
+  # see which one comes closest to the observed 2012 figure. This is a "grid
+  # search" - the least clever and most transparent way to fit a parameter.
+  floors <- seq(0, region$q_2004 * 0.999, length.out = 2000)
+  predictions <- sapply(floors, function(f) {
+    stone_geary_prediction(f, region$q_2004, PRICE_2004, PRICE_2012,
+                           budget_2004, budget_2012)
+  })
+  errors <- abs(predictions - region$q_2012)
+  best <- which.min(errors)      # which.min quietly ignores the impossible (NA) floors
+
+  list(region = region, budget_2004 = budget_2004, plain = plain,
+       floors = floors, predictions = predictions, errors = errors,
+       best_floor = floors[best], best_prediction = predictions[best],
+       best_error = errors[best])
+}
+
+national <- analyse(NATIONAL)
+puno     <- analyse(PUNO)
+
+for (res in list(national, puno)) {
+  r <- res$region
+  cat(strrep("=", 66), "\n", sep = "")
+  cat(r$name, "\n")
+  cat(sprintf("  observed 2004 -> 2012            : %.2f -> %.2f kg per person\n",
+              r$q_2004, r$q_2012))
+  cat(sprintf("  standard model (no floor) predicts: %.2f kg\n", res$plain))
+  cat(sprintf("  best-fitting floor               : %.2f kg, predicting %.2f kg\n",
+              res$best_floor, res$best_prediction))
+  cat(sprintf("  remaining error                  : %.2f kg\n", res$best_error))
+}
+cat(strrep("=", 66), "\n", sep = "")
+```
+
+```{r model6-figure, fig.width=12.5, fig.height=5.1, out.width="100%"}
+# ---------------------------------------------------------------------------
+# Draw the fit for each region: how close can the model get, for any floor?
+# ---------------------------------------------------------------------------
+
+par(mfrow = c(1, 2), mar = c(4.8, 5, 3.5, 1.5), oma = c(0, 0, 2.5, 0))
+
+for (res in list(national, puno)) {
+  r <- res$region
+
+  # IMPORTANT: unlike matplotlib's axhline, R's abline() does not stretch the
+  # axes to fit. The Puno observation sits ABOVE every prediction, so we must
+  # include the reference values in ylim or the red line would be invisible -
+  # and it is the whole point of the panel.
+  y_all <- c(res$predictions, r$q_2012, r$q_2004)
+  y_range <- range(y_all, na.rm = TRUE) + c(-0.35, 0.75)
+
+  plot(res$floors, res$predictions, type = "n", ylim = y_range,
+       xlab = "assumed subsistence floor, gamma (kg per person per year)",
+       ylab = "predicted 2012 consumption (kg)", main = r$name)
+  add_grid()
+  lines(res$floors, res$predictions, lwd = 2, col = TAB["blue"])
+  abline(h = r$q_2012, col = TAB["red"],  lty = 2, lwd = 1.5)
+  abline(h = r$q_2004, col = TAB["grey"], lty = 3)
+
+  # Mark the best fit only if the model can actually get close.
+  if (res$best_error < 0.15) {
+    points(res$best_floor, res$best_prediction, pch = 19, cex = 1.1)
+    # text() writes the label, arrows() draws the pointer from label to point.
+    label_x <- max(res$floors) * 0.05
+    label_y <- res$best_prediction * 1.38
+    text(label_x, label_y, sprintf("floor = %.1f kg\nfits exactly", res$best_floor),
+         cex = 0.8, adj = 0)
+    arrows(label_x + max(res$floors) * 0.22, label_y * 0.97,
+           res$best_floor * 0.96, res$best_prediction * 1.04,
+           length = 0.08, lwd = 1)
+  } else {
+    # Point the arrow at the GAP: where the prediction line stops short.
+    gap_y <- 0.5 * (res$best_prediction + r$q_2012)
+    arrows(max(res$floors) * 0.45, r$q_2012 * 0.62,
+           max(res$floors) * 0.97, gap_y, length = 0.08, lwd = 1)
+    text(max(res$floors) * 0.03, r$q_2012 * 0.55,
+         "the prediction line never\nreaches the observation:\nNO floor can explain this",
+         cex = 0.8, col = TAB["red"], adj = 0)
+  }
+
+  legend("bottomright",
+         legend = c("model prediction for 2012",
+                    sprintf("observed 2012: %.2f kg", r$q_2012),
+                    sprintf("observed 2004: %.2f kg", r$q_2004)),
+         col = c(TAB["blue"], TAB["red"], TAB["grey"]),
+         lwd = c(2, 1.5, 1), lty = c(1, 2, 3), bty = "n", cex = 0.72)
+}
+
+mtext("Model 6: one model, one success and one honest failure",
+      outer = TRUE, cex = 1.0)
+par(mfrow = c(1, 1), oma = c(0, 0, 0, 0))
+```
+
+## What to notice
+
+**The standard model gets the national direction right and the magnitude badly wrong.** It predicts consumption collapsing to roughly a third of what was actually observed. Directionally correct, quantitatively useless — a distinction worth insisting on, because a great deal of published social science stops at the direction.
+
+**A floor of about 3 kg per person fits the national data exactly.** That is a real finding of sorts: it converts the vague phrase "culturally important" into "roughly 3 kg a year that Peruvians will not give up." Now it is a claim someone can go and test against other evidence, which is the entire point of writing a model down.
+
+**And for Puno, no floor works at all.** Look at the right-hand panel. As the assumed floor rises, the prediction climbs toward the 2004 level and stops — it can approach 22.22 kg and never exceed it. But Puno ate *more* in 2012 than in 2004. The gap does not shrink to zero for any parameter value. **The model is not mis-calibrated; it is mis-specified.** No amount of fitting will save it.
+
+That is a genuinely valuable result, and here is why. When a model can be tuned to match anything, matching tells you nothing. This one *cannot* match, which means it has real content, and its failure points at specific missing mechanisms:
+
+1. **Puno households are producers.** Their income rises *with* the quinoa price, in exactly the way Model 1 described. Our model treated income as independent of price, which is wrong precisely where quinoa is grown.
+2. **Other prices moved too.** The article reports a hint that Puno households cut back on high-fat foods to keep eating quinoa. A one-good model cannot represent substitution *between* foods, and substitution is evidently what happened.
+3. **Much of it was never bought.** Farmers eat their own harvest. What a market price means for a household that grows the good is a genuinely difficult question in survey economics, and our model quietly assumed every kilogram was purchased at the market price.
+
+A one-good, fixed-income model was never going to survive contact with a region that grows 80% of the crop. Discovering that by watching it fail, rather than by being told, is the lesson.
+
+## Exercises
+
+1. Set `INCOME_GROWTH <- 1.0` (no rise in living standards) and re-run. How much of the national story was price and how much was income? This is a **decomposition**, and it is one of the most common things applied modelers do.
+2. Modify `analyse` so that for Puno the 2012 budget also includes quinoa sales revenue, which rises with the price: add something like `+ 100 * PRICE_2012` to `budget_2012`. Can the model now reproduce the Puno increase? What have you had to assume about how much they sell?
+3. **A conceptual question.** We rejected the model because it could not fit. But we chose the fourfold price rise, the 40% income growth, and the budget shares ourselves. How would you distinguish "the model is wrong" from "our inputs are wrong"? There is no fully satisfying answer, and knowing that is important.
+
+---
+# Model 7  
+
+# Modeling the story itself: how a false claim travelled
+
+## The claim in the article
+
+The article's own framing is that scary media reports circulated, and that even when people working on the ground tried to explain that buying quinoa was helping Andean farmers, what they had was anecdote rather than evidence. The evidence arrived years later, in working papers using ten years of ENAHO data.
+
+For a course in *computational social science*, this is the most interesting model in the notebook — because the object being modeled is the discourse, not the market.
+
+## The idea
+
+A claim spreading through a population behaves much like an infection. At any moment, divide people into three groups:
+
+- **S** — has not encountered the claim yet
+- **B** — encountered it, believes it, repeats it to others
+- **R** — has stopped repeating it, whether from boredom or from having seen the correction
+
+The flows between them:
+
+$$
+\begin{aligned}
+\text{new believers} &= \beta \, S \, B \quad \text{(a believer meets a susceptible)} \\
+\text{people who drop it} &= \delta \, B
+\end{aligned}
+$$
+
+The product $S \times B$ is the crucial term. It says transmission needs *both* someone to spread and someone to spread to — the same structure as the logistic in Models 3 and 4, now doing a third job. If you have followed this notebook you have now seen one mathematical form model an idea spreading, a herd of llamas hitting a limit, and a rumour propagating. That transferability is not a coincidence and it is not a trick; it is the reason formal modeling earns its keep across fields that share no subject matter.
+
+## The question worth asking
+
+The article's implicit criticism is about *timing*: the claim ran unopposed for years before anyone checked. So we run the same epidemic twice, changing only when the correction arrives, and ask what the correction buys.
+
+```{r model7-contagion, fig.width=12.5, fig.height=5.1, out.width="100%"}
+# ---------------------------------------------------------------------------
+# MODEL 7: the spread of a claim, and the arrival of evidence
+# ---------------------------------------------------------------------------
+
+MONTHS <- 72                # six years, roughly 2010 to 2016
+STEP   <- 0.25              # we advance in quarter-month steps for smoothness
+
+TRANSMISSION    <- 0.42     # "beta":  how readily the claim passes on
+FORGETTING      <- 0.05     # "delta": how fast people drop it unprompted
+EVIDENCE_EFFECT <- 8.0      # how much faster people drop it once evidence lands
+SEED_SHARE      <- 0.002    # the tiny fraction who believe it at the very start
+
+run_epidemic <- function(evidence_month) {
+  # Three compartments, as fractions of the population, adding to 1.
+  S <- 1.0 - SEED_SHARE
+  B <- SEED_SHARE
+  R <- 0.0
+
+  # How many steps we will take, and empty rows of numbers to record each one.
+  n_steps <- floor(MONTHS / STEP)
+  out <- data.frame(t = numeric(n_steps), S = numeric(n_steps),
+                    B = numeric(n_steps), R = numeric(n_steps))
+  t <- 0.0
+
+  for (i in seq_len(n_steps)) {
+    # Has the debunking evidence been published yet? If so, people abandon
+    # the claim much faster. Note we model evidence as changing a RATE, not
+    # as instantly convincing everyone - which is the realistic version.
+    drop_rate <- FORGETTING
+    if (t >= evidence_month) {
+      drop_rate <- FORGETTING * EVIDENCE_EFFECT
+    }
+
+    # The flows during this small slice of time.
+    newly_convinced <- TRANSMISSION * S * B * STEP
+    newly_dropped   <- drop_rate * B * STEP
+
+    # Move people between compartments. Whatever leaves S enters B, and
+    # whatever leaves B enters R. Nobody is created or destroyed - a useful
+    # thing to check in any model of this kind.
+    S <- S - newly_convinced
+    B <- B + newly_convinced - newly_dropped
+    R <- R + newly_dropped
+
+    out[i, ] <- c(t, S, B, R)
+    t <- t + STEP
+  }
+
+  out
+}
+
+# Two worlds: evidence at 12 months, and evidence at 42 months.
+early <- run_epidemic(evidence_month = 12)
+late  <- run_epidemic(evidence_month = 42)
+
+# A helper of our own for drawing stacked bands. Base R has no stackplot, so we
+# draw each band as a filled polygon: along the bottom edge left-to-right, then
+# back along the top edge right-to-left. rev() reverses a row of numbers.
+stacked_band <- function(t, lower, upper, colour) {
+  polygon(c(t, rev(t)), c(lower, rev(upper)), col = colour, border = NA)
+}
+
+par(mfrow = c(1, 2), mar = c(4.5, 5, 3.5, 1.5), oma = c(0, 0, 2.5, 0))
+
+runs   <- list(early, late)
+whens  <- c(12, 42)
+titles <- c("Evidence published early (month 12)", "Evidence published late (month 42)")
+
+for (k in 1:2) {
+  run <- runs[[k]]
+  t <- run$t
+  # The three cumulative boundaries between the bands, in percentage points.
+  b1 <- 100 * run$S                      # top of the "never heard it" band
+  b2 <- 100 * (run$S + run$B)            # top of the "believes it" band
+
+  y_label <- if (k == 1) "% of population" else ""
+
+  plot(range(t), c(0, 100), type = "n", xlab = "months", ylab = y_label,
+       main = titles[k], cex.main = 0.95)
+  stacked_band(t, rep(0, length(t)), b1, TAB["pale"])    # never heard it
+  stacked_band(t, b1, b2, TAB["red"])                    # believes and repeats it
+  stacked_band(t, b2, rep(100, length(t)), TAB["steel"]) # no longer repeats it
+
+  abline(v = whens[k], lty = 2, lwd = 1.5)
+  text(whens[k] + 1, 88, "evidence\narrives", cex = 0.8, adj = 0)
+
+  if (k == 1) {
+    legend("left", legend = c("never heard it", "believes and repeats it",
+                              "no longer repeats it"),
+           fill = c(TAB["pale"], TAB["red"], TAB["steel"]),
+           border = NA, bty = "n", cex = 0.8)
+  }
+}
+
+mtext("Model 7: the same claim, corrected early and corrected late",
+      outer = TRUE, cex = 1.0)
+par(mfrow = c(1, 1), oma = c(0, 0, 0, 0))
+
+# How many people ever believed it? That is everyone who left S: 1 minus the
+# fraction still in S at the end.
+for (k in 1:2) {
+  run  <- runs[[k]]
+  name <- c("early correction", "late correction")[k]
+  ever <- 100 * (1 - run$S[nrow(run)])
+  peak <- 100 * max(run$B)
+  peak_month <- run$t[which.max(run$B)]
+  cat(sprintf("%-18s: %5.1f%% ever believed it | peak %4.1f%% believing at once, in month %.0f\n",
+              name, ever, peak, peak_month))
+}
+```
+
+## What to notice
+
+**Correcting the record late barely reduces how many people ever believed it.** In the late-evidence world, almost everyone has already passed through the believing state before the papers appear. The correction changes what people believe *now*; it cannot change what they believed for three years, or the decisions they made meanwhile — the shoppers who stopped buying quinoa out of conscience, and whose purchases, on the evidence in the article, were helping the people they were worried about.
+
+**Timing beats content.** This model has no term at all for how *convincing* the evidence is. It does not need one. The arrival date alone drives most of the difference. That is an uncomfortable result for anyone who believes better arguments win, and it is why "rapid response" and pre-registered data infrastructure are treated as serious epistemic institutions rather than public relations.
+
+**The debunking never fully wins.** Notice that the pale grey "never heard it" band never disappears, and believers linger. In this model, as in reality, some people simply never encounter the correction. Retractions travel through a smaller network than the original claim.
+
+**A caveat you should always attach to this model.** The epidemic analogy imports assumptions that may not hold for ideas: that everyone mixes with everyone, that believing is a single binary state, that hearing the correction is like recovering from an illness. Real beliefs are held in networks, with degrees of conviction, and with motivated resistance. The right response is not to abandon the model but to know which of its conclusions depend on the shaky assumptions. Here, "late corrections are weak" is robust across almost any variant. Specific percentages are not.
+
+## Exercises
+
+1. Find, by trial and error, the latest month at which the correction still keeps the eventual believer share under half. Is that a realistic timescale for academic publication? What would it take to hit it?
+2. Set `EVIDENCE_EFFECT = 30`, making the debunking overwhelmingly persuasive, and keep it late. Compare to an early but weak correction (`evidence_month=12`, `EVIDENCE_EFFECT=2`). Which does better? What does that imply about where to invest?
+3. **The hard one.** This model treats the true and false claims symmetrically — both are just claims that spread. Is there anything in the structure that would make truth spread better? If not, what does that suggest about relying on the marketplace of ideas?
+
+---
+# Coda — Two different things called "models"
+
+Everything above is a **mechanistic** model: we specified how we think the world works, and derived what would follow. But the papers the article reports do something else entirely. Bellemare, Gitter and Fajardo-Gonzalez cleaned ten years of ENAHO data covering the boom and the years before it, split households into three groups — those who grow and eat quinoa, those who eat but do not grow it, and those who do neither — and compared how each group's welfare moved as the price rose. That is a **statistical** model. It does not say why anything happens. It asks whether a pattern in observed data could plausibly have arisen by chance.
+
+Both are called models. They answer different questions and they fail in different ways. A mechanistic model can be beautifully coherent and describe no world that exists. A statistical model can be perfectly estimated and mean nothing, because a difference between groups is not automatically an effect.
+
+The specific difficulty in this case is one the article steps around in a single sentence: quinoa eaters who do not grow it are roughly twice as well off as growers. So if you simply compared growers and non-growers *after* the boom, growers would look worse off — not because the boom hurt them but because they were poorer to begin with. The comparison you want is not between groups but between *changes* in groups. Below is a small simulation of that idea, called **difference-in-differences**, which is the workhorse of applied social science.
+
+We generate fake households where we *know* the true answer, and then check whether the method recovers it. That is the only situation in which you can ever validate a statistical method, and it is why simulation belongs in a methods course.
+
+```{r coda-did, fig.width=7.6, fig.height=4.9, out.width="100%"}
+# ---------------------------------------------------------------------------
+# CODA: why you compare changes, not levels
+# ---------------------------------------------------------------------------
+
+N <- 4000                     # households in our synthetic survey
+TRUE_EFFECT <- 500.0          # the real gain to growers from the boom, in soles.
+                              # We KNOW this because we are about to create it.
+
+# Half the households grow quinoa. Growers are poorer to start with - this is the
+# fact from the article that makes naive comparison misleading.
+is_grower <- runif(N) < 0.5
+baseline_welfare <- ifelse(is_grower, 4800.0, 9600.0)
+
+# Everyone's welfare rises over the period, because Peru grew. The article is
+# explicit that all three groups saw living standards improve.
+COMMON_TREND <- 900.0
+
+# Survey noise: every household is idiosyncratic, and surveys are imperfect.
+noise_before <- rnorm(N, mean = 0, sd = 1200)
+noise_after  <- rnorm(N, mean = 0, sd = 1200)
+
+welfare_before <- baseline_welfare + noise_before
+welfare_after  <- baseline_welfare + COMMON_TREND + TRUE_EFFECT * is_grower + noise_after
+
+# --- The wrong comparison: growers vs non-growers, after the boom only -------
+# The "!" means "not", so !is_grower picks out the non-growers.
+naive <- mean(welfare_after[is_grower]) - mean(welfare_after[!is_grower])
+
+# --- The right comparison: how much each group CHANGED -----------------------
+change_growers     <- mean(welfare_after[is_grower])  - mean(welfare_before[is_grower])
+change_non_growers <- mean(welfare_after[!is_grower]) - mean(welfare_before[!is_grower])
+did <- change_growers - change_non_growers     # difference in the differences
+
+cat(sprintf("True effect of the boom on growers      : %+8.0f soles\n", TRUE_EFFECT))
+cat(strrep("-", 58), "\n", sep = "")
+cat(sprintf("Naive comparison of levels after the boom: %+8.0f soles  <-- badly wrong, wrong sign\n", naive))
+cat(sprintf("Change among growers                     : %+8.0f soles\n", change_growers))
+cat(sprintf("Change among non-growers                 : %+8.0f soles\n", change_non_growers))
+cat(sprintf("Difference-in-differences estimate       : %+8.0f soles  <-- close to the truth\n", did))
+
+# --- Picture it --------------------------------------------------------------
+par(mfrow = c(1, 1), mar = c(4.5, 5, 3.5, 6))
+
+grower_line     <- c(mean(welfare_before[is_grower]),  mean(welfare_after[is_grower]))
+non_grower_line <- c(mean(welfare_before[!is_grower]), mean(welfare_after[!is_grower]))
+
+# The dashed line shows where growers WOULD have ended up with only the common
+# trend and no boom effect. The gap between it and reality is the estimate.
+counterfactual <- mean(welfare_before[is_grower]) + change_non_growers
+
+plot(c(0, 1), range(c(grower_line, non_grower_line)) + c(-500, 500), type = "n",
+     xlim = c(-0.15, 1.35), xaxt = "n", xlab = "",
+     ylab = "average welfare (soles)",
+     main = "Coda: growers stay poorer in levels, yet gain more")
+axis(1, at = c(0, 1), labels = c("before the boom", "after the boom"))
+add_grid()
+
+lines(c(0, 1), grower_line,     lwd = 2.5, col = TAB["blue"])
+points(c(0, 1), grower_line,    pch = 19, col = TAB["blue"])
+lines(c(0, 1), non_grower_line, lwd = 2.5, col = TAB["orange"])
+points(c(0, 1), non_grower_line, pch = 19, col = TAB["orange"])
+
+lines(c(0, 1), c(mean(welfare_before[is_grower]), counterfactual),
+      lty = 2, lwd = 1.5, col = TAB["grey"])
+
+# A double-headed arrow (code = 3) marking the gap that the method estimates.
+arrows(1, counterfactual, 1, grower_line[2], code = 3, length = 0.07,
+       lwd = 1.8, col = TAB["red"])
+text(1.03, (grower_line[2] + counterfactual) / 2, "this gap is\nthe estimate",
+     col = TAB["red"], cex = 0.8, adj = 0)
+
+legend("left", legend = c("quinoa growers (poorer, gain more)",
+                          "non-growers (richer, gain less)",
+                          "growers' counterfactual path"),
+       col = c(TAB["blue"], TAB["orange"], TAB["grey"]),
+       lwd = c(2.5, 2.5, 1.5), lty = c(1, 1, 2), bty = "n", cex = 0.75)
+```
+
+## What to notice
+
+**Levels and changes can point in opposite directions.** The naive comparison says growers are far worse off; the correct one says the boom helped them. Both statements about the data are true. Only one of them answers the question asked. Most bad quantitative social science is not arithmetic error — it is a well-computed answer to a question nobody asked.
+
+**The dashed line is doing all the work.** Difference-in-differences rests on an assumption you cannot observe: that without the boom, growers' welfare would have moved *parallel* to non-growers'. If Andean agriculture was on a different trajectory for unrelated reasons — weather, roads, migration — the estimate is wrong and nothing in the data will tell you so. Every credible study of this type spends most of its length defending that assumption.
+
+**"It is a beast to work with."** Bellemare's remark about ENAHO deserves its place in a methods course. Someone — Johanna Fajardo-Gonzalez, named in the article — spent months cleaning ten years of survey data before any of this could be estimated. That labour is invisible in the published result and is usually the difference between a real finding and a spurious one.
+
+---
+
+# Closing synthesis: what the seven models add up to
+
+| # | Model | Type | The idea it teaches |
+|---|---|---|---|
+| 1 | Net-seller welfare | Static accounting | A model with no computation can overturn a headline |
+| 2 | Cobweb | Deterministic dynamics | Delay plus negative feedback produces oscillation |
+| 3 | Logistic diffusion | Coupled dynamics | Equifinality: one pattern, many possible mechanisms |
+| 4 | Soil and herds | Stock and flow | Stocks have memory; good years can hide a drawdown |
+| 5 | Diversity game | Strategic interaction | Individually rational, collectively bad |
+| 6 | Demand with a floor | Calibration and fit | A model that cannot fit is a model with content |
+| 7 | Spread of a claim | Contagion | Timing can dominate truth |
+| — | Difference-in-differences | Statistical inference | Compare changes, not levels |
+
+Four things to take from putting them side by side.
+
+**No model is the model.** Seven models of one article, all defensible, several mutually inconsistent about mechanism. A model is not a small copy of the world; it is an instrument for asking one question at a time. Choosing which question is the researcher's job, and no algorithm does it for you.
+
+**Simple models earn their keep by being wrong in visible places.** Model 1 is almost embarrassingly crude and it settles the central dispute. Model 6 fails and the failure locates a real mechanism. A large simulation with forty parameters fitted to the same data would have told you less, because when everything can be adjusted, nothing is tested.
+
+**Time horizon is a modeling choice with moral weight.** Models 1 and 4 do not disagree about facts. They disagree about when to stop counting. "Was the quinoa boom good?" cannot be answered without saying good *by when*, and that is not something the data decides.
+
+**Mechanism and measurement need each other.** The mechanistic models above generate hypotheses but cannot say what happened. The statistical work in the papers establishes what happened but not why. Computational social science, done well, is the practice of holding both and refusing to let either off the hook.
+
+---
+
+## Suggested assignment
+
+Pick any *one* sentence from the article that we did not model. Then:
+
+1. State the causal claim inside it in one sentence.
+2. Write the smallest model that could be wrong about it — no more than about fifteen lines of code.
+3. Identify the one parameter your conclusion is most sensitive to, and say honestly how you would go about measuring it.
+4. Name one fact that your model cannot accommodate, and say what you would build next.
+
+Step 4 is worth the most marks.
