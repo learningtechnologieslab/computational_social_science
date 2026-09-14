@@ -1,0 +1,1349 @@
+---
+title: "Naive Bayes in R: Three Worked Examples"
+subtitle: "Computational Social Science — Lecture 4 companion"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: false
+    theme: readable
+    df_print: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 4.5,
+  fig.align = "center"
+)
+options(width = 100, scipen = 6)
+set.seed(42)
+```
+
+# What this document does
+
+This is the R counterpart to the Python/scikit-learn notebook. It builds Naive Bayes
+classifiers three times, at increasing scale:
+
+| | Example | Data | Rows | Features | Point of the exercise |
+|---|---|---|---|---|---|
+| 1 | Weather & golf | lecture slides | 14 | 1 categorical | Verify the library reproduces the hand calculation |
+| 2 | Voter turnout | lecture slides | 14 | 3 categorical | The independence assumption; the zero-frequency problem |
+| 3 | Income & inequality | **real data** — 1994 US Census | ~32,500 | 12 engineered | A full applied workflow and its limits |
+
+**To run this:** open in RStudio and click **Knit**, or run chunks one at a time with
+`Ctrl+Shift+Enter`. Example 3 downloads data and needs an internet connection the first
+time.
+
+## Dependencies, deliberately few
+
+Almost everything below is base R and `stats`. The only external package is `e1071`,
+which provides `naiveBayes()`. Even that is optional: every result is also computed
+longhand, so the document knits and teaches with or without it.
+
+```{r deps}
+have_e1071 <- requireNamespace("e1071", quietly = TRUE)
+
+if (!have_e1071) {
+  cat("e1071 is not installed. Install it with:  install.packages('e1071')\n",
+      "The hand-rolled sections below still run and produce every number.\n")
+} else {
+  library(e1071)
+  cat("e1071 version:", as.character(packageVersion("e1071")), "\n")
+}
+
+cat("R version:", R.version.string, "\n")
+```
+
+## First-run check
+
+Three numbers below are fixed by arithmetic, not by anything version- or
+platform-specific. If your run reproduces them, the document is working. If it does not,
+something in your setup differs and the rest of the output should not be trusted.
+
+| Where | Quantity | Expected |
+|---|---|---|
+| 1.3 | `P(Yes | Sunny)` | **0.6000** |
+| 2.2 | `P(Yes | Senior, Contacted, High)` | **0.8527** |
+| 2.6 | same case as 2.5 with `laplace = 1` | **0.7523** |
+
+The two `stopifnot()` self-tests on the AUC helper in section 3.5 serve the same purpose
+for Example 3: if either fails, knitting stops there rather than producing plausible
+nonsense.
+
+## Which R function should you use?
+
+| Function | Package | Notes |
+|---|---|---|
+| `naiveBayes()` | `e1071` | The workhorse. Gaussian for numeric predictors, categorical for factors, chosen automatically per column. |
+| `naive_bayes()` | `naivebayes` | Newer, more explicit control (`usekernel`, `usepoisson`), nicer `tables()` accessor. |
+| `NaiveBayes()` | `klaR` | Adds kernel density estimation for numeric predictors. |
+| via `discrim` | `tidymodels` | If you are already working in a tidymodels pipeline. |
+
+We use `e1071` because it is the most widely installed and the least ceremonious.
+
+## Three R-specific traps, stated before we hit them
+
+These bite people in R specifically, and two of them are silent.
+
+1. **`stringsAsFactors` defaults to `FALSE` since R 4.0.** `read.csv()` gives you
+   *character* columns, not factors. `naiveBayes()` needs factors to treat a variable as
+   categorical. Forget to convert and your carefully categorical model may not be one.
+2. **Numeric columns get a Gaussian automatically.** There is no separate `CategoricalNB`
+   / `GaussianNB` choice as in Python — `naiveBayes()` inspects each column and decides.
+   So an integer-coded category (`1, 2, 3` for education level) is silently fitted with a
+   normal distribution, implying those codes sit on a number line. Same error as in Python,
+   but easier to make here because nothing in the function call reveals the assumption.
+3. **`e1071` has two smoothing mechanisms, not one.** `naiveBayes(laplace = ...)` is the
+   Laplace prior, and it **defaults to 0** (no smoothing). Separately,
+   `predict(..., threshold = 0.001, eps = 0)` replaces zero likelihoods with `threshold`
+   at prediction time. So R will not show you a hard zero unless you ask for one.
+
+That third point is a genuine difference from Python worth holding onto:
+`sklearn`'s `CategoricalNB` smooths by default (`alpha = 1.0`), so it does *not* reproduce
+textbook arithmetic out of the box. `e1071` does not smooth by default, so it *does* — but
+it then quietly patches zeros at predict time instead. Neither library is wrong; they just
+make opposite defaults, and you have to know which you are using.
+
+---
+
+# Example 1 — Weather and Golf
+
+Slides 11–13. Fourteen days, one predictor, a binary outcome. The lecture asks: **how
+likely are players to play if the weather is sunny?** and answers 0.60.
+
+```{r golf-data}
+golf <- data.frame(
+  Weather = factor(
+    c("Sunny", "Overcast", "Rainy", "Sunny", "Sunny", "Overcast", "Rainy",
+      "Rainy", "Sunny", "Rainy", "Sunny", "Overcast", "Overcast", "Rainy"),
+    levels = c("Overcast", "Rainy", "Sunny")),
+  Play = factor(
+    c("No", "Yes", "Yes", "Yes", "Yes", "Yes", "No",
+      "No", "Yes", "Yes", "No", "Yes", "Yes", "No"),
+    levels = c("No", "Yes"))
+)
+
+# Setting levels explicitly is not decoration. It fixes the column order in every table
+# below and the encoding e1071 uses internally. Leave it out and you inherit whatever
+# alphabetical order happens to produce, which will differ from the slides.
+str(golf)
+golf
+```
+
+## 1.1 The frequency table
+
+`table()` is the counting step from slide 11. Nothing Bayesian has happened yet.
+
+```{r golf-freq}
+freq <- table(golf$Weather, golf$Play)
+addmargins(freq)          # addmargins() adds the row/column totals
+```
+
+This is slide 11 exactly: Overcast 0/4, Rainy 3/2, Sunny 2/3, totals 5 No and 9 Yes.
+
+Note the **0** in Overcast/No. No overcast day was ever a no-play day. That empty cell
+comes back in section 1.5.
+
+## 1.2 The likelihood table
+
+Divide by the **column** totals, because we want $P(\text{Weather} \mid \text{Play})$ —
+the class is the given, so the class total is the denominator.
+
+`prop.table(x, margin = 2)` normalizes within columns. Getting the margin backwards is
+the single most common error here, so check it: each **column** must sum to 1.
+
+```{r golf-lik}
+lik <- prop.table(freq, margin = 2)
+round(lik, 3)
+
+cat("\ncolumn sums (must be 1):", round(colSums(lik), 3), "\n")
+cat("row sums (meaningless -- a row mixes two distributions):",
+    round(rowSums(lik), 3), "\n")
+
+prior <- prop.table(table(golf$Play))
+cat("\npriors:\n"); print(round(prior, 3))
+```
+
+## 1.3 Bayes' theorem by hand
+
+With one predictor the denominator $P(\text{Sunny})$ is just a row total sitting in the
+frequency table, so we can apply slide 10 directly:
+
+$$P(\text{Yes} \mid \text{Sunny}) = \frac{P(\text{Sunny} \mid \text{Yes}) \times P(\text{Yes})}{P(\text{Sunny})}$$
+
+```{r golf-hand}
+p_sunny_given_yes <- lik["Sunny", "Yes"]                # 3/9
+p_sunny_given_no  <- lik["Sunny", "No"]                 # 2/5
+p_yes             <- as.numeric(prior["Yes"])           # 9/14
+p_no              <- as.numeric(prior["No"])            # 5/14
+p_sunny           <- sum(freq["Sunny", ]) / nrow(golf)  # 5/14
+
+post_yes <- p_sunny_given_yes * p_yes / p_sunny
+post_no  <- p_sunny_given_no  * p_no  / p_sunny
+
+cat(sprintf("P(Yes | Sunny) = %.4f\n", post_yes))
+cat(sprintf("P(No  | Sunny) = %.4f\n", post_no))
+cat(sprintf("they sum to      %.4f\n", post_yes + post_no))
+
+# Sanity check straight from the raw data
+sunny <- golf[golf$Weather == "Sunny", ]
+cat(sprintf("\ndirect count: %d of %d sunny days played = %.4f\n",
+            sum(sunny$Play == "Yes"), nrow(sunny),
+            mean(sunny$Play == "Yes")))
+```
+
+0.60, matching the slide, and the direct count confirms it: 3 of 5 sunny days were
+played. With a single predictor Bayes' theorem is *guaranteed* to recover the simple
+conditional proportion — it cannot do anything else. Good for checking your
+understanding, but it does not yet show what Naive Bayes is for. That is Example 2.
+
+## 1.4 The same thing with `e1071`
+
+No manual encoding step is needed: R factors carry their own levels, so `naiveBayes()`
+takes the data frame as-is. (Contrast the Python version, which needs an `OrdinalEncoder`
+because `sklearn` only accepts numeric arrays.)
+
+```{r golf-e1071, eval=have_e1071}
+# laplace = 0 disables smoothing, matching the lecture's raw-count arithmetic.
+# It is already the default; we pass it explicitly so the intent is on the page.
+m1 <- naiveBayes(Play ~ Weather, data = golf, laplace = 0)
+
+# newdata must carry the SAME factor levels as the training data. Rebuilding the factor
+# with levels = levels(golf$Weather) is the safe idiom; a bare "Sunny" string can be
+# matched to the wrong internal code or dropped.
+newday <- data.frame(Weather = factor("Sunny", levels = levels(golf$Weather)))
+
+# threshold = 0 switches OFF e1071's predict-time zero patching (see trap 3 above),
+# so what we get back is the unmodified textbook computation.
+pred_raw <- predict(m1, newdata = newday, type = "raw", threshold = 0, eps = 0)
+
+cat("e1071:\n"); print(round(pred_raw, 4))
+cat(sprintf("\nby hand:  No %.4f   Yes %.4f\n", post_no, post_yes))
+cat("\npredicted class:",
+    as.character(predict(m1, newdata = newday, type = "class")), "\n")
+```
+
+Now open the fitted object and confirm the numbers inside it are the two tables we built
+by hand.
+
+```{r golf-inside, eval=have_e1071}
+cat("--- m1$apriori : the class counts (not yet proportions) ---\n")
+print(m1$apriori)
+cat("\nas proportions:\n")
+print(round(prop.table(m1$apriori), 3))
+
+cat("\n--- m1$tables$Weather : the likelihoods ---\n")
+print(round(m1$tables$Weather, 3))
+
+cat("\n--- what we built with prop.table() ---\n")
+print(round(t(lik), 3))
+```
+
+Two things to notice.
+
+`m1$apriori` holds **counts**, not probabilities — wrap it in `prop.table()` to compare
+with our priors. And `m1$tables$Weather` is the **transpose** of our `lik`: `e1071` puts
+classes in rows and feature levels in columns. That is why `t(lik)` is needed to line
+them up. Neither convention is wrong, but mixing them up produces a table that looks
+plausible and is silently wrong, so always check which way round you are.
+
+The model *is* those tables. Training a Naive Bayes classifier is counting and dividing —
+no optimizer, no iteration. That is why it costs nothing to use as a baseline.
+
+## 1.5 The empty cell, and R's hidden third smoothing
+
+`P(Overcast | No) = 0`. Watch what happens with zero patching off, then on.
+
+```{r golf-zero, eval=have_e1071}
+overcast <- data.frame(Weather = factor("Overcast", levels = levels(golf$Weather)))
+
+cat("threshold = 0  (patching OFF -- the true unsmoothed result):\n")
+print(round(predict(m1, overcast, type = "raw", threshold = 0, eps = 0), 4))
+cat("-> 100% certainty from one empty cell in 14 rows.\n")
+
+cat("\nthreshold = 0.001 (e1071's DEFAULT -- zeros quietly replaced):\n")
+print(round(predict(m1, overcast, type = "raw"), 4))
+
+cat("\nlaplace = 1 (proper add-one smoothing at fit time):\n")
+m1_smooth <- naiveBayes(Play ~ Weather, data = golf, laplace = 1)
+print(round(predict(m1_smooth, overcast, type = "raw", threshold = 0), 4))
+cat("\nP(Yes | Sunny) under laplace = 1:\n")
+print(round(predict(m1_smooth, newday, type = "raw", threshold = 0), 4))
+```
+
+Three different answers for the same question, from one library, depending on arguments
+most people never pass. Worth dwelling on:
+
+- `threshold = 0` gives the honest unsmoothed answer: a degenerate 0/1.
+- The **default** `threshold = 0.001` hides the degeneracy by substituting an arbitrary
+  small number. It is a patch, not a principled prior, and the value 0.001 has no
+  justification beyond being small.
+- `laplace = 1` is the actual fix from the lecture. It changes the *fitted model*, spreads
+  probability mass according to a stated prior, and its influence shrinks as $n$ grows.
+
+Prefer `laplace`. And when reporting results, say which you used.
+
+---
+
+# Example 2 — Predicting Voter Turnout
+
+Fourteen respondents, three predictors, one binary outcome.
+
+| Variable | Values | Role |
+|---|---|---|
+| `Age` | Young / Middle / Senior | predictor |
+| `Contacted` | Yes / No — reached by a canvasser? | predictor |
+| `Interest` | High / Low — interest in politics | predictor |
+| `Vote` | **Yes / No** | class to predict |
+
+Three predictors is what makes this worth doing. The joint
+$P(\text{Age}, \text{Contacted}, \text{Interest} \mid c)$ cannot be estimated from 14
+rows — almost every three-way combination appears zero or one time — so we need the
+independence assumption that gives the method its name.
+
+```{r voter-data}
+voters <- data.frame(
+  Age = c("Young", "Young", "Middle", "Senior", "Senior", "Senior", "Middle",
+          "Young", "Young", "Senior", "Young", "Middle", "Middle", "Senior"),
+  Contacted = c("No", "No", "No", "No", "Yes", "Yes", "Yes",
+                "No", "Yes", "No", "Yes", "Yes", "No", "No"),
+  Interest = c("Low", "High", "High", "Low", "High", "High", "High",
+               "Low", "Low", "High", "Low", "Low", "High", "Low"),
+  Vote = c("No", "No", "Yes", "Yes", "Yes", "No", "Yes",
+           "No", "Yes", "Yes", "Yes", "Yes", "Yes", "No")
+)
+
+# Trap 1 in action: after this data.frame() call, all four columns are CHARACTER, not
+# factor (R >= 4.0). Convert explicitly, with the level order we want.
+voters$Age       <- factor(voters$Age,       levels = c("Young", "Middle", "Senior"))
+voters$Contacted <- factor(voters$Contacted, levels = c("No", "Yes"))
+voters$Interest  <- factor(voters$Interest,  levels = c("Low", "High"))
+voters$Vote      <- factor(voters$Vote,      levels = c("No", "Yes"))
+
+FEATURES <- c("Age", "Contacted", "Interest")
+
+stopifnot(all(sapply(voters, is.factor)))   # fail loudly rather than model silently
+table(voters$Vote)
+voters
+```
+
+## 2.1 One frequency table per predictor
+
+This is the structural consequence of the independence assumption: three small marginal
+tables instead of one 12-cell joint table that 14 observations could never fill.
+
+```{r voter-freq}
+for (f in FEATURES) {
+  cat("---", f, "---\n")
+  print(addmargins(table(voters[[f]], voters$Vote)))
+  cat("\n")
+}
+```
+
+Every table has the same column totals (5 No, 9 Yes) and sums to 14. If yours doesn't,
+you miscounted.
+
+`Middle`/`No` is **0** — no middle-aged respondent failed to vote. Section 2.4.
+
+## 2.2 Naive Bayes written out longhand
+
+Before reaching for a package, here is the whole algorithm in twenty lines of base R.
+Nothing is hidden, so this is the ground truth against which everything else is checked.
+
+```{r nb-by-hand}
+nb_by_hand <- function(data, features, values, target = "Vote",
+                       laplace = 0, verbose = TRUE) {
+  # Score every class for one observation. Returns normalized posteriors.
+  # laplace > 0 adds that many pseudo-counts to each category of each feature.
+  n      <- nrow(data)
+  labels <- levels(data[[target]])
+  scores <- setNames(numeric(length(labels)), labels)
+
+  for (lab in labels) {
+    sub   <- data[data[[target]] == lab, , drop = FALSE]
+    n_c   <- nrow(sub)
+    score <- n_c / n                                   # the prior P(c)
+    parts <- sprintf("P(%s)=%.3f", lab, score)
+
+    for (k in seq_along(features)) {
+      f <- features[k]
+      v <- values[k]
+      k_levels <- nlevels(data[[f]])                   # k, for the smoothing denominator
+      lk <- (sum(sub[[f]] == v) + laplace) / (n_c + laplace * k_levels)
+      score <- score * lk
+      parts <- c(parts, sprintf("P(%s=%s|%s)=%.3f", f, v, lab, lk))
+    }
+
+    scores[lab] <- score
+    if (verbose) cat("  ", paste(parts, collapse = " x "),
+                     sprintf(" = %.6f\n", score))
+  }
+
+  total <- sum(scores)
+  if (total == 0) {
+    if (verbose) cat("  every class scored exactly 0 -- undefined\n")
+    return(scores * NaN)
+  }
+  scores / total
+}
+
+new_case <- c("Senior", "Yes", "High")
+cat("Scoring Age=Senior, Contacted=Yes, Interest=High\n")
+post2 <- nb_by_hand(voters, FEATURES, new_case)
+cat("\nposteriors:\n"); print(round(post2, 4))
+```
+
+About 0.853 for Yes and 0.147 for No — the numbers from the slides. This person is
+predicted to vote, with roughly 85% confidence.
+
+## 2.3 The same thing with `e1071`
+
+```{r voter-e1071, eval=have_e1071}
+m2 <- naiveBayes(Vote ~ Age + Contacted + Interest, data = voters, laplace = 0)
+
+# Build newdata with matching levels for every column. Doing this with a small helper
+# is worth the trouble -- mismatched levels are the most common source of silently
+# wrong predictions in R.
+make_row <- function(values, template, features) {
+  row <- lapply(seq_along(features), function(k)
+    factor(values[k], levels = levels(template[[features[k]]])))
+  names(row) <- features
+  as.data.frame(row, stringsAsFactors = FALSE)
+}
+
+q2 <- make_row(new_case, voters, FEATURES)
+print(q2)
+
+cat("\ne1071:\n")
+print(round(predict(m2, q2, type = "raw", threshold = 0, eps = 0), 4))
+cat("\nby hand:\n"); print(round(post2, 4))
+```
+
+## 2.4 Which predictor drove the prediction?
+
+Naive Bayes decomposes into one factor per predictor, so you can always say which feature
+did the work. The ratio of the two likelihoods tells you which way a term pushes: above 1
+favours Yes, below 1 favours No.
+
+```{r voter-contrib, eval=have_e1071}
+contribution_table <- function(model, values, features) {
+  pri <- prop.table(model$apriori)
+  rows <- list(data.frame(term = "prior",
+                          No = as.numeric(pri["No"]),
+                          Yes = as.numeric(pri["Yes"])))
+  for (k in seq_along(features)) {
+    tab <- model$tables[[features[k]]]     # rows = class, cols = level
+    rows[[k + 1]] <- data.frame(
+      term = paste0(features[k], " = ", values[k]),
+      No   = tab["No",  values[k]],
+      Yes  = tab["Yes", values[k]])
+  }
+  out <- do.call(rbind, rows)
+  out$ratio_Yes_No <- out$Yes / out$No
+  out
+}
+
+contrib <- contribution_table(m2, new_case, FEATURES)
+print(format(contrib, digits = 3))
+cat(sprintf("\nproduct of the ratios = %.3f  <- the odds in favour of Yes\n",
+            prod(contrib$ratio_Yes_No)))
+```
+
+Read the ratio column: being contacted is the strongest signal (roughly 2.8 to 1 toward
+voting), high interest helps mildly, and being Senior leans *slightly against* voting
+(ratio below 1) but is outweighed. Multiply the ratios and you get the final odds — the
+same computation rearranged.
+
+## 2.5 The zero-frequency problem
+
+Now classify someone **Middle** aged, **not contacted**, **Low** interest.
+$P(\text{Middle} \mid \text{No}) = 0$, and one zero annihilates the whole product.
+
+```{r voter-zero}
+hard_case <- c("Middle", "No", "Low")
+cat("Age=Middle, Contacted=No, Interest=Low  (laplace = 0)\n")
+post_hard <- nb_by_hand(voters, FEATURES, hard_case)
+cat("\nposteriors:\n"); print(round(post_hard, 4))
+cat("\nThe other two predictors both lean 'No', and the zero wiped them out\n",
+    "before they could contribute.\n")
+```
+
+```{r voter-zero-e1071, eval=have_e1071}
+q_hard <- make_row(hard_case, voters, FEATURES)
+
+cat("e1071, threshold = 0 (honest):        ")
+cat(round(predict(m2, q_hard, type = "raw", threshold = 0, eps = 0), 4), "\n")
+cat("e1071, default threshold = 0.001:     ")
+cat(round(predict(m2, q_hard, type = "raw"), 4), "\n")
+cat("   ^ the default hides the collapse instead of fixing it\n")
+```
+
+## 2.6 Laplace smoothing, the actual fix
+
+$$P(x_i \mid c) = \frac{\text{count} + \alpha}{n_c + \alpha k}$$
+
+where $k$ is the number of categories that predictor has.
+
+```{r voter-laplace}
+cat("laplace = 1, by hand:\n")
+post_smooth <- nb_by_hand(voters, FEATURES, hard_case, laplace = 1)
+cat("\nposteriors:\n"); print(round(post_smooth, 4))
+cat("-> 0.248 / 0.752, matching the smoothed arithmetic from the slides\n")
+```
+
+```{r voter-laplace-e1071, eval=have_e1071}
+m2_smooth <- naiveBayes(Vote ~ Age + Contacted + Interest, data = voters, laplace = 1)
+cat("e1071 with laplace = 1:\n")
+print(round(predict(m2_smooth, q_hard, type = "raw", threshold = 0), 4))
+
+cat("\nWhat smoothing did to the Age likelihoods:\n")
+comparison <- rbind(
+  `laplace=0` = m2$tables$Age["No", ],
+  `laplace=1` = m2_smooth$tables$Age["No", ])
+cat("\nP(Age | Vote = No):\n"); print(round(comparison, 3))
+cat("\nNote: the empty Middle cell moves 0.000 -> 0.125, while the well-supported\n",
+    "cells barely move. That asymmetry is exactly what you want.\n")
+```
+
+### How much does $\alpha$ matter?
+
+```{r voter-alpha-sweep}
+alphas <- c(0, 0.01, 0.1, 0.5, 1, 2, 5, 20)
+
+sweep <- data.frame(
+  alpha = alphas,
+  P_Yes_SeniorYesHigh = sapply(alphas, function(a)
+    nb_by_hand(voters, FEATURES, new_case,  laplace = a, verbose = FALSE)[["Yes"]]),
+  P_Yes_MiddleNoLow = sapply(alphas, function(a)
+    nb_by_hand(voters, FEATURES, hard_case, laplace = a, verbose = FALSE)[["Yes"]])
+)
+print(round(sweep, 4))
+```
+
+```{r voter-alpha-plot, fig.height=4}
+# A log x-axis cannot show alpha = 0, so plot the positive values and note the
+# alpha = 0 endpoint separately (it is in the table above).
+sw <- sweep[sweep$alpha > 0, ]
+
+plot(sw$alpha, sw$P_Yes_MiddleNoLow, type = "b", pch = 19, log = "x",
+     ylim = c(0.5, 1.05), col = "#b03030",
+     xlab = expression(alpha ~ "(log scale; " * alpha == 0 * " omitted)"),
+     ylab = "P(Vote = Yes | x)",
+     main = "Smoothing drags both predictions toward the base rate")
+lines(sw$alpha, sw$P_Yes_SeniorYesHigh, type = "b", pch = 17, col = "#20607a")
+abline(h = mean(voters$Vote == "Yes"), lty = 2, col = "grey40")
+legend("bottomleft", bty = "n", cex = 0.85,
+       legend = c("Middle / No / Low (had the zero)",
+                  "Senior / Yes / High",
+                  "base rate 9/14"),
+       col = c("#b03030", "#20607a", "grey40"),
+       pch = c(19, 17, NA), lty = c(1, 1, 2))
+```
+
+As $\alpha$ grows every estimate is dragged toward uniform and both predictions decay
+toward the base rate. With 14 rows, $\alpha = 20$ has essentially erased the data. The
+effect shrinks as $n$ grows, which is why the same value is decisive here and harmless on
+the 32,000-row dataset in Example 3.
+
+## 2.7 An honest caveat
+
+Rows 5 and 6 have **identical predictors and opposite outcomes**.
+
+```{r voter-dup}
+dup <- voters[voters$Age == "Senior" & voters$Contacted == "Yes" &
+              voters$Interest == "High", ]
+print(dup)
+cat(sprintf("\nActual outcome for this exact profile: %d of %d voted. Model said 0.85.\n",
+            sum(dup$Vote == "Yes"), nrow(dup)))
+```
+
+So the truthful answer for that profile is 50/50, and our 85% is overconfident. That gap
+is the independence assumption showing its cost: multiplying three separately favourable
+likelihoods treats them as three independent witnesses when they overlap (canvassers
+plausibly target older or more engaged voters). Evidence gets double-counted and the
+posterior is pushed too far from 0.5.
+
+This is the standard, well-documented weakness: Naive Bayes **rankings and hard decisions
+are often fine, its probabilities are not**. We measure that directly in Example 3.
+
+---
+
+# Example 3 — Income, Education and Inequality (1994 US Census)
+
+## The dataset
+
+The **UCI "Adult" / Census Income** data is an extract from the 1994 US Census Current
+Population Survey, assembled by Barry Becker and Ronny Kohavi. UCI files it under
+*Social Science*, and it has been central to both machine learning and
+algorithmic-fairness research for thirty years.
+
+- Source: <https://archive.ics.uci.edu/dataset/2/adult>
+- Citation: Becker, B. & Kohavi, R. (1996). *Adult*. UCI Machine Learning Repository.
+  <https://doi.org/10.24432/C5XW20> (CC BY 4.0)
+
+**Task:** predict whether annual income exceeds \$50,000 from education, occupation,
+marital status, hours worked, sex, race, age and so on.
+
+We load `adult.data`, the 32,561-row training portion. (A further 16,281 rows live in
+`adult.test`, which uses a slightly different label format — `>50K.` with a trailing
+period. Combining them is exercise 5.)
+
+## Why this is a sociology problem
+
+The features are exactly the variables stratification research cares about. Fitting a
+classifier here asks *how legible is the income distribution from demographic
+characteristics alone?* — and, more interestingly, *which characteristics carry the most
+information, and for whom does the model fail?*
+
+Three things to keep in view:
+
+1. **The \$50,000 threshold is arbitrary and dated.** In 1994 dollars it sat near the
+   80th percentile of individual earnings. Dichotomising a continuous outcome discards
+   information, and where you cut determines what "high income" means.
+2. **Prediction is not explanation.** A large weight on `marital-status` does not mean
+   marriage causes income.
+3. **The independence assumption will be badly violated**, in ways we can measure
+   (section 3.8).
+
+## 3.1 Loading the data
+
+```{r adult-load, cache=TRUE}
+COLUMNS <- c("age", "workclass", "fnlwgt", "education", "education_num",
+             "marital_status", "occupation", "relationship", "race", "sex",
+             "capital_gain", "capital_loss", "hours_per_week",
+             "native_country", "income")
+
+UCI_URL <- paste0("https://archive.ics.uci.edu/ml/machine-learning-databases/",
+                  "adult/adult.data")
+LOCAL <- "adult.csv"
+
+load_adult <- function() {
+  if (file.exists(LOCAL)) {
+    cat("loading cached", LOCAL, "\n")
+    return(read.csv(LOCAL, stringsAsFactors = FALSE))
+  }
+  cat("downloading from the UCI archive ...\n")
+  df <- read.csv(UCI_URL,
+                 header = FALSE,
+                 col.names = COLUMNS,
+                 strip.white = TRUE,     # UCI pads fields with leading spaces
+                 na.strings = c("?", ""), # UCI codes missing as a literal "?"
+                 stringsAsFactors = FALSE)
+  write.csv(df, LOCAL, row.names = FALSE)
+  cat("cached to", LOCAL, "\n")
+  df
+}
+
+adult <- load_adult()
+
+# Trailing periods appear in adult.test; harmless to strip here too.
+adult$income <- sub("\\.$", "", trimws(adult$income))
+
+cat(sprintf("%s rows x %d columns\n", format(nrow(adult), big.mark = ","), ncol(adult)))
+str(adult, vec.len = 2)
+```
+
+## 3.2 What are we looking at?
+
+Always do this first: how imbalanced is the outcome, where are the missing values, does
+anything look wrong?
+
+```{r adult-explore}
+cat("--- outcome ---\n")
+print(table(adult$income))
+base_rate <- mean(adult$income == ">50K")
+cat(sprintf("\nbase rate: %.4f earn >50K\n", base_rate))
+cat(sprintf("-> always guessing '<=50K' is %.1f%% accurate and has learned nothing.\n",
+            100 * (1 - base_rate)))
+cat("   Accuracy will be a poor summary of this model.\n")
+
+cat("\n--- missing values ---\n")
+miss <- colSums(is.na(adult))
+print(miss[miss > 0])
+
+cat("\n--- numeric summary ---\n")
+print(summary(adult[, c("age", "hours_per_week", "capital_gain",
+                        "capital_loss", "education_num", "fnlwgt")]))
+
+cat("\n--- distinct values per character column ---\n")
+chr_cols <- names(adult)[sapply(adult, is.character)]
+print(sort(sapply(adult[chr_cols], function(x) length(unique(x))), decreasing = TRUE))
+```
+
+Two columns need a decision, and both decisions are substantive rather than technical:
+
+- **`fnlwgt`** is the census *sampling weight* — how many people in the population each
+  row represents. It is not a property of the person and must not be a predictor. (It
+  arguably should be used to weight the analysis, which is a real limitation of how this
+  dataset is almost always modelled, including here.)
+- **`education_num`** is a numeric recoding of `education`. Including both feeds the same
+  information in twice, and because Naive Bayes multiplies likelihoods, duplicated
+  evidence gets counted twice over. We keep the readable categorical version.
+
+## 3.3 Feature engineering
+
+We put everything through the categorical path, which means binning the continuous
+variables. A real trade-off:
+
+- **Cost:** binning discards within-bin variation and the cut points are our invention.
+- **Benefit:** it drops the normality assumption `naiveBayes()` would otherwise impose on
+  numeric columns. For `age` that assumption is defensible; for `capital_gain` it is not —
+  it is zero for about 92% of people and enormous for a few. No normal distribution fits
+  that, and letting `e1071` fit one anyway would corrupt every prediction involving it.
+
+So `capital_gain` and `capital_loss` become yes/no indicators, which is closer to what
+they measure: whether someone holds income-generating assets.
+
+```{r adult-features}
+d <- adult
+
+d$age_band <- cut(d$age,
+                  breaks = c(16, 24, 34, 44, 54, 64, Inf),
+                  labels = c("17-24", "25-34", "35-44", "45-54", "55-64", "65+"))
+
+d$hours_band <- cut(d$hours_per_week,
+                    breaks = c(0, 34, 44, 59, Inf),
+                    labels = c("part-time (<35)", "full-time (35-44)",
+                               "long (45-59)", "very long (60+)"))
+
+d$capital_gain_yn <- ifelse(d$capital_gain > 0, "yes", "no")
+d$capital_loss_yn <- ifelse(d$capital_loss > 0, "yes", "no")
+
+CAT <- c("age_band", "hours_band", "capital_gain_yn", "capital_loss_yn",
+         "workclass", "education", "marital_status", "occupation",
+         "relationship", "race", "sex", "native_country")
+
+cat(sprintf("share with any capital gain: %.4f\n", mean(d$capital_gain > 0)))
+cat(sprintf("share with any capital loss: %.4f\n", mean(d$capital_loss > 0)))
+cat("\nage bands:\n");   print(table(d$age_band))
+cat("\nhours bands:\n"); print(table(d$hours_band))
+```
+
+### Missing values become their own category
+
+Rather than drop rows, make `"Missing"` a level. For a categorical Naive Bayes this is
+cheap and often better than imputation: if non-response is itself informative (and in
+labour-force surveys it usually is) the model can learn from it. Dropping the rows throws
+that away and biases the sample.
+
+### Then convert everything to factors — deliberately, not by accident
+
+This is trap 1. `read.csv()` gave us character columns. `naiveBayes()` needs factors to
+treat a column as categorical. We convert explicitly and then *assert* it.
+
+```{r adult-factors}
+for (v in CAT) {
+  x <- as.character(d[[v]])
+  x[is.na(x)] <- "Missing"
+  d[[v]] <- factor(x)
+}
+
+d$income <- factor(d$income, levels = c("<=50K", ">50K"))
+
+# Fail loudly rather than fit a Gaussian by mistake.
+stopifnot(all(sapply(d[CAT], is.factor)), is.factor(d$income))
+
+cat("levels per feature:\n")
+print(sapply(d[CAT], nlevels))
+
+cat("\n'Missing' now appears where relevant:\n")
+for (v in c("workclass", "occupation", "native_country")) {
+  n <- sum(d[[v]] == "Missing")
+  cat(sprintf("  %-16s %5d rows (%.2f%%)\n", v, n, 100 * n / nrow(d)))
+}
+```
+
+### Collapsing ultra-rare levels
+
+One more step, and it is not cosmetic. `native_country` has 42 levels, several with a
+handful of observations (`Holand-Netherlands` has exactly **one** row in the whole
+dataset). Two problems follow:
+
+- **Statistically**, a likelihood estimated from one observation is noise. Laplace
+  smoothing keeps it from being zero but cannot make it informative.
+- **Mechanically**, a level with one row may land entirely in the test split, and then
+  `glm()` fails outright with *"factor has new levels"* when we try to predict. Naive
+  Bayes tolerates this; logistic regression does not.
+
+So we merge levels below a minimum count into `"Other"` before splitting. Note this is
+outcome-independent — we are counting rows, not looking at income — so it is safe to do on
+the full dataset.
+
+```{r adult-lump}
+lump_rare <- function(f, min_count = 20, other = "Other") {
+  tab  <- table(f)
+  rare <- names(tab)[tab < min_count]
+  if (!length(rare)) return(droplevels(f))
+  levels(f)[levels(f) %in% rare] <- other
+  droplevels(f)
+}
+
+levels_before <- sapply(d[CAT], nlevels)
+for (v in CAT) d[[v]] <- lump_rare(d[[v]], min_count = 20)
+levels_after <- sapply(d[CAT], nlevels)
+
+changed <- data.frame(feature = CAT,
+                      before = as.integer(levels_before),
+                      after  = as.integer(levels_after))
+changed <- changed[changed$before != changed$after, ]
+if (nrow(changed)) {
+  cat("features whose level count shrank:\n")
+  print(changed, row.names = FALSE)
+} else {
+  cat("no levels were rare enough to merge\n")
+}
+
+cat(sprintf("\nsmallest level count remaining: %d\n",
+            min(sapply(d[CAT], function(f) min(table(f))))))
+```
+
+## 3.4 Train/test split, stratified
+
+`sample()` on its own gives an unstratified split, which with imbalanced data can hand
+you a test set with a noticeably different base rate. We stratify by splitting within
+each class.
+
+```{r adult-split}
+set.seed(42)
+
+stratified_split <- function(y, test_frac = 0.25) {
+  test_idx <- unlist(lapply(levels(y), function(lev) {
+    idx <- which(y == lev)
+    sample(idx, size = round(test_frac * length(idx)))
+  }))
+  sort(test_idx)
+}
+
+test_idx  <- stratified_split(d$income, 0.25)
+train_idx <- setdiff(seq_len(nrow(d)), test_idx)
+
+train <- d[train_idx, ]
+test  <- d[test_idx, ]
+
+cat(sprintf("train %s   test %s\n",
+            format(nrow(train), big.mark = ","),
+            format(nrow(test),  big.mark = ",")))
+cat(sprintf("base rate  train %.4f   test %.4f\n",
+            mean(train$income == ">50K"), mean(test$income == ">50K")))
+```
+
+## 3.5 Metric helpers
+
+No `caret` or `pROC` dependency. AUC comes from the rank-based Mann-Whitney identity,
+which is exact and handles ties by average ranks:
+
+$$\text{AUC} = \frac{\sum_{i \in \text{pos}} r_i - n_{\text{pos}}(n_{\text{pos}} + 1)/2}{n_{\text{pos}} \, n_{\text{neg}}}$$
+
+```{r adult-metrics}
+auc_score <- function(labels, scores) {
+  # labels: 0/1 numeric. scores: higher = more likely positive.
+  pos <- scores[labels == 1]
+  neg <- scores[labels == 0]
+  if (!length(pos) || !length(neg)) return(NA_real_)
+  r <- rank(c(pos, neg))                       # average ranks for ties
+  (sum(r[seq_along(pos)]) - length(pos) * (length(pos) + 1) / 2) /
+    (length(pos) * length(neg))
+}
+
+classification_report <- function(truth, pred, positive = ">50K") {
+  cm <- table(actual = truth, predicted = pred)
+  tp <- sum(truth == positive  & pred == positive)
+  fp <- sum(truth != positive  & pred == positive)
+  fn <- sum(truth == positive  & pred != positive)
+  tn <- sum(truth != positive  & pred != positive)
+  prec <- if ((tp + fp) > 0) tp / (tp + fp) else NA_real_
+  rec  <- if ((tp + fn) > 0) tp / (tp + fn) else NA_real_
+  spec <- if ((tn + fp) > 0) tn / (tn + fp) else NA_real_
+  list(
+    confusion = cm,
+    accuracy = (tp + tn) / length(truth),
+    balanced_accuracy = mean(c(rec, spec)),
+    precision = prec,
+    recall = rec,
+    f1 = if (!is.na(prec) && !is.na(rec) && (prec + rec) > 0)
+           2 * prec * rec / (prec + rec) else NA_real_
+  )
+}
+
+# quick self-test on a case we can verify by inspection
+stopifnot(abs(auc_score(c(0, 0, 1, 1), c(0.1, 0.2, 0.3, 0.4)) - 1) < 1e-9)
+stopifnot(abs(auc_score(c(0, 1), c(0.5, 0.5)) - 0.5) < 1e-9)  # a tie is worth 0.5
+cat("metric helpers self-tested OK\n")
+```
+
+## 3.6 Fit, and compare against honest baselines
+
+A model's accuracy means nothing alone. Two reference points:
+
+- **Majority-class baseline** — the floor. About 76% accurate here, having learned nothing.
+- **Logistic regression** (`glm`) — comparable simplicity, but does *not* assume feature
+  independence. If Naive Bayes lands far below it, the independence assumption is costing
+  us; if close, it is doing little harm.
+
+```{r adult-fit, eval=have_e1071}
+form <- as.formula(paste("income ~", paste(CAT, collapse = " + ")))
+
+m3 <- naiveBayes(form, data = train, laplace = 1)
+
+# We leave predict()'s threshold at its default here. With laplace = 1 there are no
+# zero likelihoods left for it to patch, so it never fires -- unlike Examples 1 and 2,
+# where we had to switch it off to see the honest result.
+prob_nb <- predict(m3, test, type = "raw")[, ">50K"]
+pred_nb <- predict(m3, test, type = "class")
+
+y_test_num <- as.integer(test$income == ">50K")
+
+rep_nb <- classification_report(test$income, pred_nb)
+
+# --- majority baseline ---
+majority <- factor(rep("<=50K", nrow(test)), levels = levels(test$income))
+rep_maj  <- classification_report(test$income, majority)
+
+# --- logistic regression ---
+# Guard against the failure mode described in 3.3: any factor level present in test but
+# absent from train makes predict.glm() error out. After lumping this should never fire,
+# but check rather than trust.
+unseen <- unlist(lapply(CAT, function(v) {
+  miss <- setdiff(levels(droplevels(test[[v]])), levels(droplevels(train[[v]])))
+  if (length(miss)) paste0(v, ": ", paste(miss, collapse = ", ")) else NULL
+}))
+if (length(unseen)) {
+  cat("WARNING -- levels in test but not train:\n"); cat(unseen, sep = "\n")
+} else {
+  cat("level check passed: every test level appears in train\n")
+}
+
+glm_fit <- glm(form, data = train, family = binomial())
+prob_lr <- predict(glm_fit, newdata = test, type = "response")
+pred_lr <- factor(ifelse(prob_lr > 0.5, ">50K", "<=50K"),
+                  levels = levels(test$income))
+rep_lr  <- classification_report(test$income, pred_lr)
+
+results <- data.frame(
+  model = c("majority baseline", "naiveBayes (laplace=1)", "logistic regression"),
+  accuracy = c(rep_maj$accuracy, rep_nb$accuracy, rep_lr$accuracy),
+  balanced_acc = c(rep_maj$balanced_accuracy, rep_nb$balanced_accuracy,
+                   rep_lr$balanced_accuracy),
+  AUC = c(NA, auc_score(y_test_num, prob_nb), auc_score(y_test_num, prob_lr))
+)
+print(format(results, digits = 4))
+```
+
+**Reading that table.** Look at `balanced_acc` and `AUC`, not `accuracy`. The majority
+baseline posts a high accuracy and a balanced accuracy of exactly 0.50 — it is right
+about everyone who earns less and wrong about everyone who earns more. Balanced accuracy
+averages the per-class recall, so it exposes that at once. AUC asks a different and often
+more useful question: draw one high earner and one low earner at random; how often does
+the model score the high earner higher?
+
+```{r adult-cm, eval=have_e1071}
+cat("--- confusion matrix, naiveBayes ---\n")
+print(rep_nb$confusion)
+cat(sprintf("\naccuracy          %.4f\nbalanced accuracy %.4f\n",
+            rep_nb$accuracy, rep_nb$balanced_accuracy))
+cat(sprintf("precision (>50K)  %.4f\nrecall    (>50K)  %.4f\nF1        (>50K)  %.4f\n",
+            rep_nb$precision, rep_nb$recall, rep_nb$f1))
+```
+
+Mind the gap between precision and recall on `>50K`. Which matters depends entirely on
+the application, and that is a substantive question. If this model screened people for a
+benefits programme, a false negative (missing someone who needs help) and a false positive
+(enrolling someone who does not) carry very different human costs, and no single number
+captures the trade-off.
+
+```{r adult-roc, eval=have_e1071}
+roc_points <- function(labels, scores) {
+  o <- order(scores, decreasing = TRUE)
+  lab <- labels[o]
+  tpr <- cumsum(lab == 1) / sum(lab == 1)
+  fpr <- cumsum(lab == 0) / sum(lab == 0)
+  data.frame(fpr = c(0, fpr), tpr = c(0, tpr))
+}
+
+r_nb <- roc_points(y_test_num, prob_nb)
+r_lr <- roc_points(y_test_num, prob_lr)
+
+plot(r_nb$fpr, r_nb$tpr, type = "l", lwd = 2, col = "#20607a",
+     xlab = "false positive rate", ylab = "true positive rate",
+     main = "Predicting income > $50K, 1994 US Census")
+lines(r_lr$fpr, r_lr$tpr, lwd = 2, col = "#b03030")
+abline(0, 1, lty = 2, col = "grey50")
+legend("bottomright", bty = "n",
+       legend = c(sprintf("naiveBayes (AUC %.3f)", auc_score(y_test_num, prob_nb)),
+                  sprintf("logistic regression (AUC %.3f)", auc_score(y_test_num, prob_lr)),
+                  "chance"),
+       col = c("#20607a", "#b03030", "grey50"), lwd = c(2, 2, 1), lty = c(1, 1, 2))
+```
+
+## 3.7 Interpretation: which characteristics carry information?
+
+The part a sociologist actually wants. For each category compute the **evidence weight**
+
+$$w = \log \frac{P(\text{category} \mid >\$50\text{K})}{P(\text{category} \mid \le\$50\text{K})}$$
+
+Positive means the category is more common among high earners, so observing it shifts the
+prediction upward. This reads straight off `m3$tables` — no extra fitting, because the
+trained model already *is* these tables.
+
+Two warnings before reading the output. These are **associations in 1994 survey data**,
+not causal effects and not current facts. And a weight can be large while the category is
+rare, so always read the probabilities beside the ratio.
+
+```{r adult-evidence, eval=have_e1071}
+evidence_weights <- function(model, feature, min_share = 0.01) {
+  tab <- model$tables[[feature]]          # rows = class, cols = level
+  out <- data.frame(
+    category      = colnames(tab),
+    p_given_low   = as.numeric(tab["<=50K", ]),
+    p_given_high  = as.numeric(tab[">50K",  ]),
+    stringsAsFactors = FALSE
+  )
+  out$evidence_weight <- log(out$p_given_high / out$p_given_low)
+  out <- out[pmax(out$p_given_low, out$p_given_high) >= min_share, ]
+  out[order(-out$evidence_weight), ]
+}
+
+for (f in c("education", "marital_status", "occupation")) {
+  cat("\n===", f, strrep("=", max(0, 46 - nchar(f))), "\n")
+  print(format(evidence_weights(m3, f), digits = 3), row.names = FALSE)
+}
+```
+
+```{r adult-evidence-plot, eval=have_e1071, fig.height=9, fig.width=8}
+op <- par(mfrow = c(3, 1), mar = c(4, 11, 3, 1))
+for (f in c("education", "marital_status", "occupation")) {
+  ew <- evidence_weights(m3, f)
+  ew <- ew[order(ew$evidence_weight), ]
+  barplot(ew$evidence_weight, names.arg = ew$category, horiz = TRUE, las = 1,
+          col = ifelse(ew$evidence_weight < 0, "#b03030", "#20607a"),
+          cex.names = 0.75, xlab = "log P(cat | >50K) / P(cat | <=50K)",
+          main = f)
+  abline(v = 0, lwd = 1)
+}
+par(op)
+```
+
+### What to look for, and how to be careful
+
+Read the education panel first. The ordering should be close to monotone in credential
+level, which is the most robust finding in stratification research and a good sign the
+model is picking up something real rather than noise.
+
+Then read `marital_status`, carefully. `Married-civ-spouse` will almost certainly carry a
+large positive weight, and it is tempting to narrate that as "marriage raises income." At
+least four mechanisms are tangled in that one number, and this model separates none of
+them:
+
+1. **Selection** — higher earners are more likely to marry in the first place.
+2. **Measurement** — the income variable interacts with household and filing structure.
+3. **Age confounding** — married people are older, and earnings rise with age.
+4. **Gendered specialisation** within households.
+
+A Naive Bayes weight is a *marginal* association: it compares married to unmarried people
+without holding age, education or occupation constant. This is precisely where a
+classifier stops being able to answer the question you want answered and you need a
+research design instead.
+
+## 3.8 Auditing the independence assumption
+
+We assumed the predictors are conditionally independent given income. Let's measure how
+false that is with **Cramér's V**, a chi-squared-based association measure for two
+categorical variables scaled to $[0, 1]$.
+
+```{r adult-cramer}
+cramers_v <- function(a, b) {
+  tab <- table(a, b)
+  if (any(dim(tab) < 2)) return(NA_real_)
+  chi2 <- suppressWarnings(chisq.test(tab, correct = FALSE)$statistic)
+  n <- sum(tab)
+  as.numeric(sqrt((chi2 / n) / max(1, min(dim(tab) - 1))))
+}
+
+V <- outer(seq_along(CAT), seq_along(CAT), Vectorize(function(i, j) {
+  if (i == j) 1 else cramers_v(d[[CAT[i]]], d[[CAT[j]]])
+}))
+dimnames(V) <- list(CAT, CAT)
+
+# strongest pairs, upper triangle only
+ut <- which(upper.tri(V), arr.ind = TRUE)
+pairs_df <- data.frame(
+  a = CAT[ut[, 1]], b = CAT[ut[, 2]], V = V[ut]
+)
+pairs_df <- pairs_df[order(-pairs_df$V), ]
+cat("most strongly associated predictor pairs:\n")
+print(format(head(pairs_df, 10), digits = 3), row.names = FALSE)
+```
+
+```{r adult-cramer-plot, fig.height=6.5, fig.width=7.5}
+op <- par(mar = c(9, 9, 3, 2))
+# z[i, k] must be V[i, p + 1 - k] so that the y axis reads top-to-bottom
+image(seq_along(CAT), seq_along(CAT), V[, rev(seq_along(CAT))],
+      col = hcl.colors(24, "YlOrRd", rev = TRUE), zlim = c(0, 1),
+      axes = FALSE, xlab = "", ylab = "",
+      main = "Cramer's V between predictors\n(Naive Bayes assumes every off-diagonal cell is 0)")
+axis(1, at = seq_along(CAT), labels = CAT, las = 2, cex.axis = 0.7)
+axis(2, at = seq_along(CAT), labels = rev(CAT), las = 1, cex.axis = 0.7)
+box()
+par(op)
+```
+
+Naive Bayes assumes every off-diagonal cell there is zero. It is not. The
+`marital_status` / `relationship` / `sex` cluster should stand out sharply —
+`relationship` takes values like `Husband` and `Wife`, which encode marital status and sex
+*by construction*, so the model counts the same fact up to three times.
+
+Yet the AUC above was respectable. That is the enduring puzzle about Naive Bayes, and the
+resolution is worth stating precisely: violated independence corrupts the *probabilities*
+far more than the *ranking*. Double-counted evidence pushes posteriors toward 0 and 1, but
+it usually pushes them in the direction they were already going, so the ordering of cases
+— and hence AUC, and hence the argmax decision — survives.
+
+### Does dropping the redundancy help?
+
+```{r adult-trim, eval=have_e1071}
+CAT_TRIM <- setdiff(CAT, "relationship")
+form_trim <- as.formula(paste("income ~", paste(CAT_TRIM, collapse = " + ")))
+
+m3_trim <- naiveBayes(form_trim, data = train, laplace = 1)
+prob_trim <- predict(m3_trim, test, type = "raw")[, ">50K"]
+
+cat(sprintf("with 'relationship':    AUC %.4f\n", auc_score(y_test_num, prob_nb)))
+cat(sprintf("without 'relationship': AUC %.4f\n", auc_score(y_test_num, prob_trim)))
+cat("\nIf dropping a redundant feature barely moves AUC while that feature had a high\n",
+    "Cramer's V with others, you are seeing the effect described above: the ranking was\n",
+    "robust to the violation even though the probabilities were not.\n")
+```
+
+## 3.9 Calibration: are the probabilities trustworthy?
+
+In Example 2 we predicted 0.85 for a profile whose true rate was 0.50. Let's measure that
+failure mode properly. Group the test set by predicted probability and compare the average
+prediction in each bucket to the actual rate. A calibrated model puts those close together.
+
+```{r adult-calib, eval=have_e1071}
+calibration_table <- function(p, y, n_bins = 10) {
+  bucket <- cut(p, breaks = seq(0, 1, length.out = n_bins + 1),
+                include.lowest = TRUE)
+  groups <- split(data.frame(p = p, y = y), bucket, drop = TRUE)
+  out <- do.call(rbind, lapply(names(groups), function(nm) {
+    g <- groups[[nm]]
+    data.frame(bucket = nm, n = nrow(g),
+               mean_predicted = mean(g$p), actual_rate = mean(g$y))
+  }))
+  out$gap <- out$mean_predicted - out$actual_rate
+  out
+}
+
+cal_nb <- calibration_table(prob_nb, y_test_num)
+print(format(cal_nb, digits = 3), row.names = FALSE)
+```
+
+```{r adult-calib-plot, eval=have_e1071, fig.width=11, fig.height=4.8}
+cal_lr <- calibration_table(prob_lr, y_test_num)
+
+op <- par(mfrow = c(1, 2), mar = c(4.5, 4.5, 3, 1))
+
+plot(cal_nb$mean_predicted, cal_nb$actual_rate, type = "b", pch = 19, lwd = 2,
+     col = "#20607a", xlim = c(0, 1), ylim = c(0, 1),
+     xlab = "mean predicted probability", ylab = "observed rate of >$50K",
+     main = "Reliability curve")
+lines(cal_lr$mean_predicted, cal_lr$actual_rate, type = "b", pch = 17, lwd = 2,
+      col = "#b03030")
+abline(0, 1, lty = 2, col = "grey40")
+legend("topleft", bty = "n", cex = 0.85,
+       legend = c("naiveBayes", "logistic regression", "perfect calibration"),
+       col = c("#20607a", "#b03030", "grey40"),
+       pch = c(19, 17, NA), lty = c(1, 1, 2))
+
+col_nb <- rgb(32 / 255, 96 / 255, 122 / 255, alpha = 0.60)
+col_lr <- rgb(176 / 255, 48 / 255, 48 / 255, alpha = 0.50)
+
+hist(prob_nb, breaks = 40, col = col_nb, border = NA,
+     xlab = "predicted P(income > $50K)", ylab = "count",
+     main = "Where the predicted probabilities pile up")
+hist(prob_lr, breaks = 40, col = col_lr, border = NA, add = TRUE)
+legend("top", bty = "n", cex = 0.85, fill = c(col_nb, col_lr),
+       legend = c("naiveBayes", "logistic regression"))
+
+par(op)
+```
+
+Look at the right-hand histogram. Naive Bayes tends to pile predictions against 0 and 1
+while logistic regression spreads them through the middle. That is the double-counting of
+correlated evidence, visible directly.
+
+The Brier score measures calibration and accuracy together — lower is better:
+
+```{r adult-brier, eval=have_e1071}
+brier <- function(p, y) mean((p - y)^2)
+cat(sprintf("naiveBayes:          %.4f\n", brier(prob_nb, y_test_num)))
+cat(sprintf("logistic regression: %.4f\n", brier(prob_lr, y_test_num)))
+```
+
+**The practical rule:** use Naive Bayes probabilities to *rank* cases, not as calibrated
+risk estimates. If you need the number itself to mean something — "this person has a 30%
+chance" — recalibrate (isotonic regression via `stats::isoreg`, or Platt scaling by
+fitting a `glm` of the outcome on the model's log-odds) or use a method that estimates
+probabilities properly.
+
+## 3.10 Who does the model fail?
+
+An aggregate metric hides distributional damage. A model can look fine overall and be
+systematically worse for a subgroup. The features here include `sex` and `race`, so we can
+and should check.
+
+This is a descriptive audit, not a fairness verdict — "fairness" has several mutually
+incompatible formal definitions, and choosing among them is an ethical and political
+question a document like this does not settle.
+
+```{r adult-subgroups, eval=have_e1071}
+subgroup_report <- function(attribute, truth, pred, data, positive = ">50K") {
+  grp <- data[[attribute]]
+  out <- do.call(rbind, lapply(levels(droplevels(factor(grp))), function(lev) {
+    k <- grp == lev
+    t_k <- truth[k]; p_k <- pred[k]
+    pos <- t_k == positive
+    neg <- !pos
+    data.frame(
+      group          = lev,
+      n              = sum(k),
+      true_rate      = mean(pos),
+      predicted_rate = mean(p_k == positive),
+      recall         = if (any(pos)) mean(p_k[pos] == positive) else NA_real_,
+      FPR            = if (any(neg)) mean(p_k[neg] == positive) else NA_real_,
+      accuracy       = mean(t_k == p_k),
+      stringsAsFactors = FALSE)
+  }))
+  out[order(-out$n), ]
+}
+
+cat("=== by sex ", strrep("=", 50), "\n")
+print(format(subgroup_report("sex", test$income, pred_nb, test), digits = 3),
+      row.names = FALSE)
+
+cat("\n=== by race ", strrep("=", 49), "\n")
+print(format(subgroup_report("race", test$income, pred_nb, test), digits = 3),
+      row.names = FALSE)
+```
+
+Compare the `recall` column across groups. Recall is the share of genuinely high-earning
+people the model finds. If it is markedly lower for one group, the model disproportionately
+fails to identify high earners in that group — and if such a model were used to target a
+programme or allocate a resource, that gap would become a distributional harm.
+
+Two mechanisms usually drive this, and they call for different responses:
+
+- **Base rates differ across groups.** Naive Bayes multiplies in `P(sex | class)`, so a
+  group with a lower observed rate of high earnings is pushed toward the low-income
+  prediction for that reason alone.
+- **Sample size differs.** Smaller groups have noisier likelihood estimates, and Laplace
+  smoothing pulls them harder toward uniform (adding 1 to a denominator of 200 matters
+  more than adding 1 to a denominator of 20,000).
+
+Worth trying: refit without `sex` and `race` and see what happens to the gaps. Removing a
+protected attribute often does **not** close them, because correlated features such as
+`occupation` and `relationship` carry the same information. "Fairness through unawareness"
+mostly does not work, and this dataset shows it cleanly.
+
+## 3.11 What would we conclude?
+
+Stated as a researcher would state it:
+
+> Using twelve demographic and employment characteristics from the 1994 CPS, a Naive Bayes
+> classifier separates individuals earning above and below \$50,000 substantially better
+> than chance, and comparably to logistic regression, despite strongly violated
+> independence assumptions among its predictors. Educational credentials and occupational
+> category carry the largest evidence weights, in an ordering consistent with
+> stratification research. The model's probability estimates are poorly calibrated,
+> concentrating near 0 and 1; they are usable for ranking but not as risk estimates.
+> Recall varies across sex and racial groups, reflecting differences in both base rates and
+> estimation precision.
+
+What it does **not** license:
+
+- No causal claim. Nothing here establishes that a credential *causes* higher earnings.
+- No claim about today. These are 1994 associations at a 1994 dollar threshold.
+- No claim about the population without weights. `fnlwgt` exists for a reason and we
+  ignored it, as nearly everyone using this dataset does. A published analysis should not.
+
+---
+
+# Closing
+
+## Choosing an approach in R
+
+- All predictors are factors → `e1071::naiveBayes()` handles it directly.
+- Continuous predictors, plausibly normal within class → leave them numeric and
+  `naiveBayes()` fits a Gaussian per class.
+- Continuous but clearly not normal → bin with `cut()`, as we did for `capital_gain`, or
+  use `klaR::NaiveBayes(usekernel = TRUE)` for kernel density estimates.
+- Text or count data → `naivebayes::multinomial_naive_bayes()`.
+
+## Mistakes that cost people marks and papers
+
+1. **Forgetting `stringsAsFactors`.** Since R 4.0 your character columns are not factors.
+   Convert explicitly and `stopifnot()` it.
+2. **Letting an integer-coded category stay numeric.** `naiveBayes()` fits a Gaussian to
+   it without comment. It runs. It is wrong.
+3. **Not knowing which smoothing you got.** `laplace` defaults to 0 at fit time;
+   `threshold` defaults to 0.001 at predict time. Two knobs, two defaults, and neither is
+   mentioned in most tutorials.
+4. **Mismatched factor levels in `newdata`.** Build prediction rows from
+   `levels(train$col)`, never from bare strings.
+5. **Reading `m$apriori` as probabilities.** They are counts; use `prop.table()`.
+6. **Reading `m$tables` with the wrong orientation.** Rows are classes, columns are
+   levels — the transpose of what `prop.table(table(x, y), 2)` gives you.
+7. **Reporting accuracy on imbalanced data.** Always put the majority-class baseline
+   beside it.
+8. **Treating the probabilities as calibrated.** Rank with them; do not quote them.
+9. **Reading a likelihood ratio as a causal effect.** It is a marginal association with
+   nothing held constant.
+10. **Including two features that encode the same thing** (`education` and
+    `education_num`). Multiplying likelihoods counts that evidence twice.
+
+## R and Python: the same model, opposite defaults
+
+| | `e1071::naiveBayes` | `sklearn.CategoricalNB` |
+|---|---|---|
+| Smoothing default | `laplace = 0` — none | `alpha = 1.0` — add-one |
+| Reproduces the slides out of the box? | Yes | No |
+| Zero likelihoods at predict time | patched to `threshold = 0.001` | left as 0 |
+| Categorical encoding | automatic from factors | you must encode to integers |
+| Numeric columns | Gaussian, chosen automatically | you pick the class |
+
+The most useful thing on that table is the first row. If you port an analysis between the
+two languages and the numbers move by a few percent, this is the first place to look.
+
+## Exercises
+
+1. In Example 2, add a fourth predictor of your own invention to the 14 rows and see how
+   far the posterior for the test case moves. How many predictors can 14 rows support?
+2. Re-run section 3.10 after dropping `sex` and `race` from `CAT`. Does the subgroup recall
+   gap close? Explain what you find.
+3. Sweep `laplace` over the Adult data as we did for the 14-row dataset. Why is the curve
+   so much flatter?
+4. Replace the `age_band` and `hours_band` cut points with equal-width bins
+   (`cut(x, breaks = 6)`) and then with deciles
+   (`cut(x, quantile(x, seq(0, 1, 0.1)), include.lowest = TRUE)`). How much does AUC move?
+   What does that tell you about how much the binning choice mattered?
+5. Load `adult.test` (same URL with `.test`, but skip the first line and strip the trailing
+   period from the labels), and use it as a held-out set instead of splitting `adult.data`.
+   Do the metrics change? Why might a pre-defined split be preferable to your own?
+6. Implement Platt scaling: fit `glm(y ~ log_odds, family = binomial())` on a validation
+   split, where `log_odds` comes from the Naive Bayes probabilities. Does the Brier score
+   improve? Does AUC change, and why not?
+
+## Session info
+
+Always include this in anything you submit. It makes your results reproducible and your
+version-specific bugs diagnosable.
+
+```{r session}
+sessionInfo()
+```
